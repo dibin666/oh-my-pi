@@ -27,7 +27,6 @@ import {
 	JSON_TREE_SCALAR_LEN_COLLAPSED,
 	JSON_TREE_SCALAR_LEN_EXPANDED,
 	renderJsonTreeLines,
-	stripInternalArgs,
 } from "../../tools/json-tree";
 import { PYTHON_DEFAULT_PREVIEW_LINES } from "../../tools/python";
 import { formatExpandHint, replaceTabs, resolveImageOptions, truncateToWidth } from "../../tools/render-utils";
@@ -110,7 +109,7 @@ export class ToolExecutionComponent extends Container {
 		isError?: boolean;
 		details?: any;
 	};
-	// Edit preview state (single-file for legacy modes, multi-file for chunk)
+	// Edit preview state
 	#editMode?: EditMode;
 	#editDiffPreview?: PerFileDiffPreview[];
 	#editDiffScheduleTimer?: NodeJS.Timeout;
@@ -640,10 +639,7 @@ export class ToolExecutionComponent extends Container {
 			return this.#args;
 		}
 		// Single-file previews feed the existing `previewDiff` channel consumed
-		// by `formatStreamingDiff` in the renderer. Multi-file previews are
-		// piped via `renderContext.perFileDiffPreview`, so the args we hand to
-		// `renderCall` only need the first file's diff to preserve prior
-		// single-file behavior.
+		// by `formatStreamingDiff` in the renderer.
 		const first = previews[0];
 		if (!first?.diff) {
 			return this.#args;
@@ -743,9 +739,7 @@ export class ToolExecutionComponent extends Container {
 			lines.push("");
 			lines.push(theme.fg("dim", "Args"));
 			const tree = renderJsonTreeLines(
-				this.#args && typeof this.#args === "object" && !Array.isArray(this.#args)
-					? stripInternalArgs(this.#args as Record<string, unknown>)
-					: this.#args,
+				this.#args,
 				theme,
 				JSON_TREE_MAX_DEPTH_EXPANDED,
 				JSON_TREE_MAX_LINES_EXPANDED,

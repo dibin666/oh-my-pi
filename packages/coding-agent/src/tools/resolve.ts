@@ -13,7 +13,7 @@ import { ToolError } from "./tool-errors";
 
 const resolveSchema = Type.Object({
 	action: Type.Union([Type.Literal("apply"), Type.Literal("discard")]),
-	reason: Type.String({ description: "Why you're applying or discarding" }),
+	reason: Type.String({ description: "reason for action", examples: ["approved by user"] }),
 });
 
 type ResolveParams = Static<typeof resolveSchema>;
@@ -110,6 +110,8 @@ export class ResolveTool implements AgentTool<typeof resolveSchema, ResolveToolD
 	readonly description: string;
 	readonly parameters = resolveSchema;
 	readonly strict = true;
+	readonly intent = (args: Partial<ResolveParams>) =>
+		args.action === "discard" ? "Discarding pending action" : "Applying pending action";
 
 	constructor(private readonly session: ToolSession) {
 		this.description = prompt.render(resolveDescription);

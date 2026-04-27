@@ -72,7 +72,6 @@ describe("ast_edit tool schema", () => {
 
 			const result = await tool!.execute("ast-edit-test", {
 				ops: [{ pat: "legacyWrap($A, $B)", out: "modernWrap($A, $B)" }],
-				lang: "typescript",
 				path: filePath,
 			});
 			const text = result.content.find(content => content.type === "text")?.text ?? "";
@@ -82,9 +81,9 @@ describe("ast_edit tool schema", () => {
 
 			expect(removedLine).toBeDefined();
 			expect(addedLine).toBeDefined();
-			expect(removedLine).toMatch(/^-\d+#\w+:/);
-			expect(addedLine).toMatch(/^\+\d+#\w+:/);
-			expect(removedLine?.split(":", 1)[0].length).toBe(addedLine?.split(":", 1)[0].length);
+			expect(removedLine).toMatch(/^-\d+[a-z]{2}\|/);
+			expect(addedLine).toMatch(/^\+\d+[a-z]{2}\|/);
+			expect(removedLine?.split("|", 1)[0].length).toBe(addedLine?.split("|", 1)[0].length);
 		} finally {
 			await fs.rm(tempDir, { recursive: true, force: true });
 		}
@@ -109,7 +108,6 @@ describe("ast_edit tool schema", () => {
 
 			const previewResult = await tool!.execute("ast-edit-preview", {
 				ops: [{ pat: "legacyWrap($A, $B)", out: "modernWrap($A, $B)" }],
-				lang: "typescript",
 				path: filePath,
 			});
 			expect(previewResult.details).toBeDefined();
@@ -155,7 +153,6 @@ describe("ast_edit tool schema", () => {
 
 			const previewResult = await tool!.execute("ast-edit-preview", {
 				ops: [{ pat: "legacyWrap($A, $B)", out: "modernWrap($A, $B)" }],
-				lang: "typescript",
 				path: filePath,
 			});
 			expect((previewResult.details as { totalReplacements?: number } | undefined)?.totalReplacements).toBe(1);
@@ -206,9 +203,7 @@ describe("ast_edit tool schema", () => {
 
 			const previewResult = await tool!.execute("ast-edit-glob", {
 				ops: [{ pat: "legacyWrap($A, $B)", out: "modernWrap($A, $B)" }],
-				lang: "typescript",
-				path: `${packagesDir}/pkg-*/src`,
-				glob: "**/*.ts",
+				path: `${packagesDir}/pkg-*/src/**/*.ts`,
 			});
 
 			const text = previewResult.content.find(content => content.type === "text")?.text ?? "";
@@ -216,8 +211,8 @@ describe("ast_edit tool schema", () => {
 				| { totalReplacements?: number; fileReplacements?: Array<{ path: string; count: number }> }
 				| undefined;
 
-			expect(text).toContain("## └─ root.ts (1 replacement)");
-			expect(text).toContain("## └─ child.ts (1 replacement)");
+			expect(text).toContain("## root.ts (1 replacement)");
+			expect(text).toContain("## child.ts (1 replacement)");
 			expect(text).not.toContain("ignore.js");
 			expect(text).not.toContain("outside.ts");
 			expect(details?.totalReplacements).toBe(2);

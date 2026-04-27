@@ -260,6 +260,30 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<BuiltinSlashCommandSpec> = [
 		},
 	},
 	{
+		name: "todo",
+		description: "View or modify the agent's todo list",
+		subcommands: [
+			{ name: "edit", description: "Open todos in $EDITOR (Markdown round-trip)" },
+			{ name: "copy", description: "Copy todos as Markdown to clipboard" },
+			{ name: "export", description: "Write todos as Markdown to a file (default: TODO.md)", usage: "[<path>]" },
+			{ name: "import", description: "Replace todos from a Markdown file (default: TODO.md)", usage: "[<path>]" },
+			{
+				name: "append",
+				description: "Append a task; phase fuzzy-matched or auto-created",
+				usage: "[<phase>] <task...>",
+			},
+			{ name: "start", description: "Mark task in_progress (fuzzy-matched)", usage: "<task>" },
+			{ name: "done", description: "Mark task/phase/all completed (fuzzy-matched)", usage: "[<task|phase>]" },
+			{ name: "drop", description: "Mark task/phase/all abandoned (fuzzy-matched)", usage: "[<task|phase>]" },
+			{ name: "rm", description: "Remove task/phase/all (fuzzy-matched)", usage: "[<task|phase>]" },
+		],
+		allowArgs: true,
+		handle: async (command, runtime) => {
+			await runtime.ctx.handleTodoCommand(command.args);
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
 		name: "session",
 		description: "Session management commands",
 		subcommands: [
@@ -486,6 +510,14 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<BuiltinSlashCommandSpec> = [
 		handle: async (_command, runtime) => {
 			runtime.ctx.editor.setText("");
 			await runtime.ctx.handleClearCommand();
+		},
+	},
+	{
+		name: "drop",
+		description: "Delete the current session and start a new one",
+		handle: async (_command, runtime) => {
+			runtime.ctx.editor.setText("");
+			await runtime.ctx.handleDropCommand();
 		},
 	},
 	{

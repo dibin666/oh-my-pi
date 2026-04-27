@@ -1,6 +1,7 @@
 /**
  * Edit tool renderer and LSP batching helpers.
  */
+import { sanitizeText } from "@oh-my-pi/pi-natives";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
@@ -50,6 +51,9 @@ export interface EditToolPerFileResult {
 	move?: string;
 	isError?: boolean;
 	errorText?: string;
+	/** TUI-friendly error text. When present, rendered to the user instead of `errorText`.
+	 * Set when the underlying error carries a `displayMessage` (e.g. {@link HashlineMismatchError}). */
+	displayErrorText?: string;
 	meta?: OutputMeta;
 }
 
@@ -91,7 +95,7 @@ interface EditRenderArgs {
 	 */
 	previewDiff?: string;
 	__partialJson?: string;
-	// Hashline / chunk mode fields
+	// Hashline mode fields
 	edits?: EditRenderEntry[];
 }
 
@@ -138,7 +142,7 @@ export interface EditRenderContext {
 	editMode?: EditMode;
 	/** Pre-computed diff preview (computed before tool executes) */
 	editDiffPreview?: DiffResult | DiffError;
-	/** Multi-file streaming diff preview (chunk edits spanning several files) */
+	/** Multi-file streaming diff preview (edits spanning several files) */
 	perFileDiffPreview?: PerFileDiffPreview[];
 	/** Function to render diff text with syntax highlighting */
 	renderDiff?: (diffText: string, options?: { filePath?: string }) => string;
@@ -148,40 +152,22 @@ const EDIT_STREAMING_PREVIEW_LINES = 12;
 const CALL_TEXT_PREVIEW_LINES = 6;
 const CALL_TEXT_PREVIEW_WIDTH = 80;
 
-/** Extract file path from an edit entry's path (handles chunk's file:selector format). */
+/** Extract file path from an edit entry. */
 function filePathFromEditEntry(p: string | undefined): string | undefined {
-	if (!p) return undefined;
-	const ci = /^[a-zA-Z]:[/\\]/.test(p) ? p.indexOf(":", 2) : p.indexOf(":");
-	return ci === -1 ? p : p.slice(0, ci);
+	return p ?? undefined;
 }
 
 function decodePartialJsonStringFragment(fragment: string): string {
-	let text = fragment;
+	// Trim a trailing partial escape so JSON.parse sees a well-formed string.
+	let text = fragment.replace(/\\u[0-9a-fA-F]{0,3}$/, "");
 	const trailingBackslashes = text.match(/\\+$/)?.[0].length ?? 0;
-	if (trailingBackslashes % 2 === 1) {
-		text = text.slice(0, -1);
-	}
+	if (trailingBackslashes % 2 === 1) text = text.slice(0, -1);
 	try {
 		return JSON.parse(`"${text}"`) as string;
 	} catch {
-		return text
-			.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)))
-			.replace(/\\(["\\/bfnrt])/g, (_, ch: string) => {
-				switch (ch) {
-					case "b":
-						return "\b";
-					case "f":
-						return "\f";
-					case "n":
-						return "\n";
-					case "r":
-						return "\r";
-					case "t":
-						return "\t";
-					default:
-						return ch;
-				}
-			});
+		// Streaming fragment isn't a valid JSON string yet; surface it raw rather
+		// than ad-hoc unescaping that mishandles surrogates and partial escapes.
+		return text;
 	}
 }
 
@@ -242,11 +228,11 @@ function formatEditDescription(
 	};
 }
 
-function renderPlainTextPreview(text: string, uiTheme: Theme): string {
-	const previewLines = text.split("\n");
+function renderPlainTextPreview(text: string, uiTheme: Theme, filePath?: string): string {
+	const previewLines = sanitizeText(text).split("\n");
 	let preview = "\n\n";
 	for (const line of previewLines.slice(0, CALL_TEXT_PREVIEW_LINES)) {
-		preview += `${uiTheme.fg("toolOutput", truncateToWidth(replaceTabs(line), CALL_TEXT_PREVIEW_WIDTH))}\n`;
+		preview += `${uiTheme.fg("toolOutput", truncateToWidth(replaceTabs(line, filePath), CALL_TEXT_PREVIEW_WIDTH))}\n`;
 	}
 	if (previewLines.length > CALL_TEXT_PREVIEW_LINES) {
 		preview += uiTheme.fg("dim", `… ${previewLines.length - CALL_TEXT_PREVIEW_LINES} more lines`);
@@ -281,9 +267,9 @@ function formatMultiFileStreamingDiff(previews: PerFileDiffPreview[], uiTheme: T
 	const parts: string[] = [];
 	for (const preview of previews) {
 		if (!preview.diff && !preview.error) continue;
-		const header = uiTheme.fg("dim", `\n\n── ${shortenPath(preview.path)} ──`);
+		const header = uiTheme.fg("dim", `\n\n\u2500\u2500 ${shortenPath(preview.path)} \u2500\u2500`);
 		if (preview.error) {
-			parts.push(`${header}\n${uiTheme.fg("error", replaceTabs(preview.error))}`);
+			parts.push(`${header}\n${uiTheme.fg("error", replaceTabs(preview.error, preview.path))}`);
 			continue;
 		}
 		if (preview.diff) {
@@ -300,7 +286,7 @@ function getCallPreview(
 	renderContext: EditRenderContext | undefined,
 ): string {
 	const multi = renderContext?.perFileDiffPreview;
-	if (multi && multi.length > 0 && multi.some(p => p.diff || p.error)) {
+	if (multi && multi.length > 1 && multi.some(p => p.diff || p.error)) {
 		return formatMultiFileStreamingDiff(multi, uiTheme);
 	}
 	if (args.previewDiff) {
@@ -310,10 +296,10 @@ function getCallPreview(
 		return formatStreamingDiff(args.diff, rawPath, uiTheme);
 	}
 	if (args.diff) {
-		return renderPlainTextPreview(args.diff, uiTheme);
+		return renderPlainTextPreview(args.diff, uiTheme, rawPath);
 	}
 	if (args.newText || args.patch) {
-		return renderPlainTextPreview(args.newText ?? args.patch ?? "", uiTheme);
+		return renderPlainTextPreview(args.newText ?? args.patch ?? "", uiTheme, rawPath);
 	}
 	return "";
 }
@@ -377,18 +363,18 @@ function wrapEditRendererLine(line: string, width: number): string[] {
 	const startAnsi = line.match(/^((?:\x1b\[[0-9;]*m)*)/)?.[1] ?? "";
 	const bodyWithReset = line.slice(startAnsi.length);
 	const body = bodyWithReset.endsWith("\x1b[39m") ? bodyWithReset.slice(0, -"\x1b[39m".length) : bodyWithReset;
-	const diffMatch = /^([+\-\s])(\s*\d+)\|(.*)$/s.exec(body);
+	const diffMatch = /^([+\-\s])(\s*\d+)([|│])(.*)$/s.exec(body);
 
 	if (!diffMatch) {
 		return wrapTextWithAnsi(line, width);
 	}
 
-	const [, marker, lineNum, content] = diffMatch;
-	const prefix = `${marker}${lineNum}|`;
+	const [, marker, lineNum, separator, content] = diffMatch;
+	const prefix = `${marker}${lineNum}${separator}`;
 	const prefixWidth = visibleWidth(prefix);
 	const contentWidth = Math.max(1, width - prefixWidth);
-	const continuationPrefix = `${" ".repeat(Math.max(0, prefixWidth - 1))}|`;
-	const wrappedContent = wrapTextWithAnsi(content, contentWidth);
+	const continuationPrefix = `${" ".repeat(Math.max(0, prefixWidth - 1))}${separator}`;
+	const wrappedContent = wrapTextWithAnsi(content ?? "", contentWidth);
 
 	return wrappedContent.map(
 		(segment, index) => `${startAnsi}${index === 0 ? prefix : continuationPrefix}${segment}\x1b[39m`,
@@ -437,7 +423,7 @@ export const editToolRenderer = {
 		}
 		text += getCallPreview(editArgs, rawPath, uiTheme, renderContext);
 		if (applyPatchSummary?.error) {
-			text += `\n\n${uiTheme.fg("error", truncateToWidth(replaceTabs(applyPatchSummary.error), CALL_TEXT_PREVIEW_WIDTH))}`;
+			text += `\n\n${uiTheme.fg("error", truncateToWidth(replaceTabs(applyPatchSummary.error, rawPath), CALL_TEXT_PREVIEW_WIDTH))}`;
 		}
 
 		return new Text(text, 0, 0);
@@ -489,13 +475,14 @@ function renderSingleFileResult(
 	const rename = args?.rename || firstEdit?.rename || firstEdit?.move || details?.move;
 	const { language } = formatEditDescription(rawPath, uiTheme, { rename });
 
-	const metadataLine =
-		op !== "delete"
-			? `\n${formatMetadataLine(countLines(args?.newText ?? args?.oldText ?? args?.diff ?? args?.patch ?? ""), language, uiTheme)}`
-			: "";
+	const editTextSource = args?.newText ?? args?.oldText ?? args?.diff ?? args?.patch;
+	const metadataLineCount = editTextSource ? countLines(editTextSource) : null;
+	const metadataLine = op !== "delete" ? `\n${formatMetadataLine(metadataLineCount, language, uiTheme)}` : "";
 
+	const displayErrorText = isError && details && "displayErrorText" in details ? details.displayErrorText : undefined;
 	const errorText = isError
-		? (details && "errorText" in details && details.errorText) ||
+		? displayErrorText ||
+			(details && "errorText" in details && details.errorText) ||
 			(result.content?.find(c => c.type === "text")?.text ?? "")
 		: "";
 
@@ -527,13 +514,13 @@ function renderSingleFileResult(
 
 			if (isError) {
 				if (errorText) {
-					text += `\n\n${uiTheme.fg("error", replaceTabs(errorText))}`;
+					text += `\n\n${uiTheme.fg("error", replaceTabs(errorText, rawPath))}`;
 				}
 			} else if (details?.diff) {
 				text += renderDiffSection(details.diff, rawPath, expanded, uiTheme, renderDiffFn);
 			} else if (editDiffPreview) {
 				if ("error" in editDiffPreview) {
-					text += `\n\n${uiTheme.fg("error", replaceTabs(editDiffPreview.error))}`;
+					text += `\n\n${uiTheme.fg("error", replaceTabs(editDiffPreview.error, rawPath))}`;
 				} else if (editDiffPreview.diff) {
 					text += renderDiffSection(editDiffPreview.diff, rawPath, expanded, uiTheme, renderDiffFn);
 				}

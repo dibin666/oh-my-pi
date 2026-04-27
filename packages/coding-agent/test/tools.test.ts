@@ -11,11 +11,10 @@ import { EditTool } from "@oh-my-pi/pi-coding-agent/edit";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { BashTool } from "@oh-my-pi/pi-coding-agent/tools/bash";
-import { CancelJobTool } from "@oh-my-pi/pi-coding-agent/tools/cancel-job";
 import { FindTool } from "@oh-my-pi/pi-coding-agent/tools/find";
 import { GrepTool } from "@oh-my-pi/pi-coding-agent/tools/grep";
+import { JobTool } from "@oh-my-pi/pi-coding-agent/tools/job";
 import { wrapToolWithMetaNotice } from "@oh-my-pi/pi-coding-agent/tools/output-meta";
-import { PollTool } from "@oh-my-pi/pi-coding-agent/tools/poll-tool";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
 import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
 import * as markitUtils from "@oh-my-pi/pi-coding-agent/utils/markit";
@@ -332,9 +331,7 @@ describe("Coding Agent Tools", () => {
 			expect(output).toContain("Line 1");
 			expect(output).toContain(`Line ${defaultLimit}`);
 			expect(output).not.toContain(`Line ${defaultLimit + 1}`);
-			expect(output).toContain(
-				`[Showing lines 1-${defaultLimit} of 3500. Use sel=L${defaultLimit + 1} to continue]`,
-			);
+			expect(output).toContain(`[Showing lines 1-${defaultLimit} of 3500. Use sel=${defaultLimit + 1} to continue]`);
 		});
 
 		it("should truncate when byte limit exceeded", async () => {
@@ -348,9 +345,7 @@ describe("Coding Agent Tools", () => {
 
 			expect(output).toContain("Line 1:");
 			// Should show byte limit message
-			expect(output).toMatch(
-				/\[Showing lines 1-\d+ of 1000 \(\d+(\.\d+)?\s*KB limit\)\. Use sel=L\d+ to continue\]/,
-			);
+			expect(output).toMatch(/\[Showing lines 1-\d+ of 1000 \(\d+(\.\d+)?\s*KB limit\)\. Use sel=\d+ to continue\]/);
 		});
 
 		it("should handle offset parameter", async () => {
@@ -379,7 +374,7 @@ describe("Coding Agent Tools", () => {
 			expect(output).toContain("Line 1");
 			expect(output).toContain("Line 10");
 			expect(output).not.toContain("Line 11");
-			expect(output).toContain("[Showing lines 1-10 of 100. Use sel=L11 to continue]");
+			expect(output).toContain("[Showing lines 1-10 of 100. Use sel=11 to continue]");
 		});
 
 		it("should handle offset + limit together", async () => {
@@ -397,7 +392,7 @@ describe("Coding Agent Tools", () => {
 			expect(output).toContain("Line 41");
 			expect(output).toContain("Line 60");
 			expect(output).not.toContain("Line 61");
-			expect(output).toContain("[Showing lines 41-60 of 100. Use sel=L61 to continue]");
+			expect(output).toContain("[Showing lines 41-60 of 100. Use sel=61 to continue]");
 		});
 
 		it("should show error when offset is beyond file length", async () => {
@@ -408,7 +403,7 @@ describe("Coding Agent Tools", () => {
 			const output = getTextOutput(result);
 
 			expect(output).toContain("Line 100 is beyond end of file (3 lines total)");
-			expect(output).toContain("Use sel=L1 to read from the start, or sel=L3 to read the last line.");
+			expect(output).toContain("Use sel=1 to read from the start, or sel=3 to read the last line.");
 		});
 
 		it("should include truncation details when truncated", async () => {
@@ -506,7 +501,7 @@ describe("Coding Agent Tools", () => {
 				expect(output).toContain("# Archive README");
 				expect(output).toContain("Line 2");
 				expect(output).not.toContain("Line 3");
-				expect(output).toContain("Use sel=L3");
+				expect(output).toContain("Use sel=3");
 			});
 		}
 
@@ -1131,12 +1126,11 @@ function b() {
 				Settings.isolated({ "bash.autoBackground.enabled": true }),
 			);
 
-			expect(PollTool.createIf(autoBackgroundSession)).not.toBeNull();
-			expect(CancelJobTool.createIf(autoBackgroundSession)).not.toBeNull();
+			expect(JobTool.createIf(autoBackgroundSession)).not.toBeNull();
 		});
 	});
 
-	describe("PollTool", () => {
+	describe("JobTool", () => {
 		it("should wait for jobs and acknowledge deliveries to prevent race conditions", async () => {
 			const manager = new AsyncJobManager({
 				onJobComplete: async () => {},
@@ -1144,12 +1138,12 @@ function b() {
 			const session = createTestToolSession(testDir, Settings.isolated({ "bash.autoBackground.enabled": true }), {
 				asyncJobManager: manager,
 			});
-			const pollTool = PollTool.createIf(session)!;
+			const jobTool = JobTool.createIf(session)!;
 
 			const jobId = manager.register("bash", "test job", async () => "success");
 
 			// Job is running, call poll
-			const resultPromise = pollTool.execute("test-call-poll-1", { jobs: [jobId] });
+			const resultPromise = jobTool.execute("test-call-poll-1", { poll: [jobId] });
 
 			// Ensure poll finished
 			const result = await resultPromise;
@@ -1176,7 +1170,7 @@ function b() {
 			const output = getTextOutput(result);
 			expect(output).not.toContain("# example.txt");
 			// PI_EDIT_VARIANT=replace in beforeEach disables hashlines; expect line-number mode
-			expect(output).toMatch(/\b2:match line/);
+			expect(output).toMatch(/\*2\|match line/);
 		});
 
 		it("should accept wildcard patterns in the path parameter", async () => {
@@ -1195,7 +1189,7 @@ function b() {
 			expect(output).not.toContain("schema-other.test.ts");
 			expect(result.details?.fileCount).toBe(2);
 		});
-		it("should combine globbing from path and glob parameters", async () => {
+		it("should accept nested wildcard filters in the path parameter", async () => {
 			const packageDir = path.join(testDir, "node_modules", ".bun");
 			const aiDir = path.join(packageDir, "ai@6.0.119+build123", "node_modules", "ai");
 			const nestedDir = path.join(aiDir, "nested");
@@ -1207,43 +1201,55 @@ function b() {
 
 			const result = await grepTool.execute("test-call-11-path-and-glob", {
 				pattern: "providerOptions",
-				path: `${packageDir}/ai@6.0.119+*/node_modules/ai`,
-				glob: "**/*.{d.ts,ts}",
+				path: `${packageDir}/ai@6.0.119+*/node_modules/ai/**/*.{d.ts,ts}`,
 				gitignore: false,
 			});
 
 			const output = getTextOutput(result);
-			expect(output).toContain("## └─ root.ts");
-			expect(output).toContain("## └─ child.d.ts");
+			expect(output).toContain("## root.ts");
+			expect(output).toContain("## child.d.ts");
 			expect(output).not.toContain("ignore.js");
 			expect(output).not.toContain("outside.ts");
 			expect(result.details?.fileCount).toBe(2);
 		});
 
-		it("should respect global limit and include context lines", async () => {
+		it("should include configured context lines", async () => {
 			const testFile = path.join(testDir, "context.txt");
 			const content = ["before", "match one", "after", "middle", "match two", "after two"].join("\n");
 			fs.writeFileSync(testFile, content);
 
-			const result = await grepTool.execute("test-call-12", {
+			const contextSettings = Settings.isolated({ "grep.contextBefore": 1, "grep.contextAfter": 1 });
+			const contextGrepTool = wrapToolWithMetaNotice(new GrepTool(createTestToolSession(testDir, contextSettings)));
+			const result = await contextGrepTool.execute("test-call-12", {
 				pattern: "match",
 				path: testFile,
-				limit: 1,
-				pre: 1,
-				post: 1,
 			});
 
 			const output = getTextOutput(result);
 			expect(output).not.toContain("# context.txt");
-			expect(output).toMatch(/\b1-before/);
-			expect(output).toMatch(/\b2:match one/);
-			expect(output).toMatch(/\b3-after/);
-			expect(output).toContain("[1 matches limit reached. Use limit=2 for more]");
-			// Ensure second match is not present
-			expect(output).not.toContain("match two");
+			expect(output).toMatch(/ 1\|before/);
+			expect(output).toMatch(/\*2\|match one/);
+			expect(output).toMatch(/ 3\|after/);
+			expect(output).toMatch(/\*5\|match two/);
 		});
 
-		it("should group multi-file matches and distribute limit with round-robin", async () => {
+		it("should skip matches with the skip parameter", async () => {
+			const testFile = path.join(testDir, "skip.txt");
+			fs.writeFileSync(testFile, ["needle one", "needle two", "needle three"].join("\n"));
+
+			const result = await grepTool.execute("test-call-12-skip", {
+				pattern: "needle",
+				path: testFile,
+				skip: 1,
+			});
+
+			const output = getTextOutput(result);
+			expect(output).not.toContain("needle one");
+			expect(output).toContain("needle two");
+			expect(output).toContain("needle three");
+		});
+
+		it("should group multi-file matches", async () => {
 			for (let i = 1; i <= 3; i++) {
 				fs.writeFileSync(path.join(testDir, `file-${i}.txt`), `needle in file ${i}\nextra needle ${i}`);
 			}
@@ -1252,7 +1258,6 @@ function b() {
 			const result = await grepTool.execute("test-call-13-round-robin", {
 				pattern: "needle",
 				path: testDir,
-				limit: 4,
 			});
 
 			const output = getTextOutput(result);
@@ -1261,19 +1266,18 @@ function b() {
 			expect(output).toContain("# file-3.txt");
 			expect(output).toContain("# dominant.txt");
 			expect(output).not.toContain("# .");
-			expect(output).toContain("[4 matches limit reached. Use limit=8 for more]");
+			expect(output).not.toContain("Result limit reached");
 			expect(result.details?.fileCount).toBe(4);
-			expect(result.details?.matchCount).toBe(4);
+			expect(result.details?.matchCount).toBe(10);
 		});
 
-		it("should not repeat file headings when round-robin selects multiple matches per file", async () => {
+		it("should not repeat file headings for multiple matches per file", async () => {
 			fs.writeFileSync(path.join(testDir, "alpha.txt"), "needle a1\nneedle a2\nneedle a3");
 			fs.writeFileSync(path.join(testDir, "beta.txt"), "needle b1\nneedle b2\nneedle b3");
 
 			const result = await grepTool.execute("test-call-14-grouped-headings", {
 				pattern: "needle",
 				path: testDir,
-				limit: 4,
 			});
 
 			const output = getTextOutput(result);
@@ -1283,8 +1287,8 @@ function b() {
 			expect(betaHeadings).toBe(1);
 			expect(result.details?.fileMatches).toEqual(
 				expect.arrayContaining([
-					expect.objectContaining({ path: "alpha.txt", count: 2 }),
-					expect.objectContaining({ path: "beta.txt", count: 2 }),
+					expect.objectContaining({ path: "alpha.txt", count: 3 }),
+					expect.objectContaining({ path: "beta.txt", count: 3 }),
 				]),
 			);
 		});
@@ -1302,8 +1306,8 @@ function b() {
 
 			const output = getTextOutput(result);
 			expect(output).toContain("# packages/ai");
-			expect(output).toContain("## └─ CHANGELOG.md");
-			expect(output).toContain("## └─ models.json");
+			expect(output).toContain("## CHANGELOG.md");
+			expect(output).toContain("## models.json");
 			expect(result.details?.fileCount).toBeGreaterThanOrEqual(2);
 		});
 
@@ -1364,11 +1368,11 @@ function b() {
 			expect(output).toContain("match.txt");
 			expect(output).toContain("needle kept");
 			expect(output).not.toContain("blocked.fifo");
-			expect(output).not.toContain("## └─ blocked.fifo");
+			expect(output).not.toContain("## blocked.fifo");
 			expect(result.details?.fileCount).toBe(1);
 			expect(result.details?.matchCount).toBe(1);
 		});
-		it("should apply default limit of 20 when limit is not provided", async () => {
+		it("should apply the fixed default match cap", async () => {
 			const lines = Array.from({ length: 60 }, (_, i) => `needle ${i + 1}`);
 			fs.writeFileSync(path.join(testDir, "default-limit.txt"), lines.join("\n"));
 
@@ -1378,7 +1382,7 @@ function b() {
 			});
 
 			const output = getTextOutput(result);
-			expect(output).toContain("[20 matches limit reached. Use limit=40 for more]");
+			expect(output).toContain("Result limit reached; narrow path or use skip=20.");
 			expect(result.details?.matchCount).toBe(20);
 			expect(result.details?.matchLimitReached).toBe(20);
 		});
@@ -1596,88 +1600,6 @@ describe("edit tool CRLF handling", () => {
 				edits: [{ path: testFile, old_text: "hello\nworld\n", new_text: "replaced\n" }],
 			}),
 		).rejects.toThrow(/Found 2 occurrences/);
-	});
-
-	it("should delete file in hashline mode with delete:true", async () => {
-		const originalEditVariant = Bun.env.PI_EDIT_VARIANT;
-		Bun.env.PI_EDIT_VARIANT = "hashline";
-
-		const hashDir = path.join(os.tmpdir(), `coding-agent-hashline-delete-${Snowflake.next()}`);
-		fs.mkdirSync(hashDir, { recursive: true });
-		const testFile = path.join(hashDir, "delete-me.txt");
-		fs.writeFileSync(testFile, "to be deleted\n");
-
-		try {
-			const session = createTestToolSession(hashDir);
-			const hashlineEditTool = new EditTool(session);
-			const result = await hashlineEditTool.execute("hashline-delete-1", {
-				edits: [{ path: testFile, delete: true }],
-			} as any);
-
-			expect(getTextOutput(result)).toContain("Deleted");
-			expect(fs.existsSync(testFile)).toBe(false);
-		} finally {
-			fs.rmSync(hashDir, { recursive: true, force: true });
-			if (originalEditVariant === undefined) delete Bun.env.PI_EDIT_VARIANT;
-			else Bun.env.PI_EDIT_VARIANT = originalEditVariant;
-		}
-	});
-
-	it("should rename file in hashline mode with rename", async () => {
-		const originalEditVariant = Bun.env.PI_EDIT_VARIANT;
-		Bun.env.PI_EDIT_VARIANT = "hashline";
-
-		const hashDir = path.join(os.tmpdir(), `coding-agent-hashline-rename-${Snowflake.next()}`);
-		fs.mkdirSync(hashDir, { recursive: true });
-		const sourceFile = path.join(hashDir, "source.txt");
-		const targetFile = path.join(hashDir, "moved", "target.txt");
-		fs.writeFileSync(sourceFile, "unchanged content\n");
-
-		try {
-			const session = createTestToolSession(hashDir);
-			const hashlineEditTool = new EditTool(session);
-			const result = await hashlineEditTool.execute("hashline-rename-1", {
-				edits: [{ path: sourceFile, move: targetFile }],
-			} as any);
-
-			expect(getTextOutput(result)).toContain("Moved");
-			expect(fs.existsSync(sourceFile)).toBe(false);
-			expect(fs.existsSync(targetFile)).toBe(true);
-			expect(await Bun.file(targetFile).text()).toBe("unchanged content\n");
-		} finally {
-			fs.rmSync(hashDir, { recursive: true, force: true });
-			if (originalEditVariant === undefined) delete Bun.env.PI_EDIT_VARIANT;
-			else Bun.env.PI_EDIT_VARIANT = originalEditVariant;
-		}
-	});
-
-	it("should preserve binary bytes when moving in hashline mode", async () => {
-		const originalEditVariant = Bun.env.PI_EDIT_VARIANT;
-		Bun.env.PI_EDIT_VARIANT = "hashline";
-
-		const hashDir = path.join(os.tmpdir(), `coding-agent-hashline-binary-move-${Snowflake.next()}`);
-		fs.mkdirSync(hashDir, { recursive: true });
-		const sourceFile = path.join(hashDir, "image.bin");
-		const targetFile = path.join(hashDir, "moved", "image.bin");
-		const originalBytes = Buffer.from([0, 255, 13, 10, 137, 80, 78, 71, 0, 1, 2, 3, 127]);
-		fs.writeFileSync(sourceFile, originalBytes);
-
-		try {
-			const session = createTestToolSession(hashDir);
-			const hashlineEditTool = new EditTool(session);
-			const result = await hashlineEditTool.execute("hashline-rename-binary", {
-				edits: [{ path: sourceFile, move: targetFile }],
-			} as any);
-
-			expect(getTextOutput(result)).toContain("Moved");
-			expect(fs.existsSync(sourceFile)).toBe(false);
-			expect(fs.existsSync(targetFile)).toBe(true);
-			expect(Array.from(fs.readFileSync(targetFile))).toEqual(Array.from(originalBytes));
-		} finally {
-			fs.rmSync(hashDir, { recursive: true, force: true });
-			if (originalEditVariant === undefined) delete Bun.env.PI_EDIT_VARIANT;
-			else Bun.env.PI_EDIT_VARIANT = originalEditVariant;
-		}
 	});
 
 	// TODO: CRLF preservation broken by LSP formatting - fix later

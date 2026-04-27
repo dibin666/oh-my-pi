@@ -161,6 +161,14 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 				}
 			}
 
+			if (
+				assistantMsg.errorMessage &&
+				assistantMsg.stopReason !== "error" &&
+				assistantMsg.stopReason !== "aborted"
+			) {
+				process.stderr.write(`${sanitizeText(assistantMsg.errorMessage)}\n`);
+			}
+
 			// Output text content
 			for (const content of assistantMsg.content) {
 				if (content.type === "text") {

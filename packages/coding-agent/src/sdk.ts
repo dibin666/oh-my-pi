@@ -83,6 +83,7 @@ import {
 } from "./mcp/discoverable-tool-metadata";
 import { buildMemoryToolDeveloperInstructions, getMemoryRoot, startMemoryStartupTask } from "./memories";
 import asyncResultTemplate from "./prompts/tools/async-result.md" with { type: "text" };
+import { AgentRegistry, MAIN_AGENT_ID } from "./registry/agent-registry";
 import {
 	collectEnvSecrets,
 	deobfuscateSessionContext,
@@ -128,7 +129,7 @@ import {
 	warmupLspServers,
 } from "./tools";
 import { ToolContextStore } from "./tools/context";
-import { getGeminiImageTools } from "./tools/gemini-image";
+import { getImageGenTools } from "./tools/image-gen";
 import { wrapToolWithMetaNotice } from "./tools/output-meta";
 import { queueResolveHandler } from "./tools/resolve";
 import { EventBus } from "./utils/event-bus";
@@ -209,10 +210,16 @@ export interface CreateAgentSessionOptions {
 
 	/** Output schema for structured completion (subagents) */
 	outputSchema?: unknown;
-	/** Whether to include the submit_result tool by default */
-	requireSubmitResultTool?: boolean;
+	/** Whether to include the yield tool by default */
+	requireYieldTool?: boolean;
 	/** Task recursion depth (for subagent sessions). Default: 0 */
 	taskDepth?: number;
+	/** Pre-allocated agent identity for IRC routing. Default: "0-Main" for top-level, parentTaskPrefix-derived for sub. */
+	agentId?: string;
+	/** Display name for the agent in IRC. Default: "main" or "sub". */
+	agentDisplayName?: string;
+	/** Optional shared agent registry for IRC routing. Default: AgentRegistry.global(). */
+	agentRegistry?: AgentRegistry;
 	/** Parent task ID prefix for nested artifact naming (e.g., "6-Extensions") */
 	parentTaskPrefix?: string;
 
@@ -673,7 +680,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	}
 
 	const imageProvider = settings.get("providers.image");
-	if (imageProvider === "auto" || imageProvider === "gemini" || imageProvider === "openrouter") {
+	if (
+		imageProvider === "auto" ||
+		imageProvider === "openai" ||
+		imageProvider === "gemini" ||
+		imageProvider === "openrouter"
+	) {
 		setPreferredImageProvider(imageProvider);
 	}
 
@@ -891,6 +903,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			})
 		: undefined;
 
+	const agentRegistry = options.agentRegistry ?? AgentRegistry.global();
+	const resolvedAgentId = options.agentId ?? options.parentTaskPrefix ?? MAIN_AGENT_ID;
+	const resolvedAgentDisplayName =
+		options.agentDisplayName ?? ((options.taskDepth ?? 0) > 0 || options.parentTaskPrefix ? "sub" : "main");
 	const pythonKernelOwnerId = `agent-session:${Snowflake.next()}`;
 
 	try {
@@ -916,7 +932,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			skills,
 			eventBus,
 			outputSchema: options.outputSchema,
-			requireSubmitResultTool: options.requireSubmitResultTool,
+			requireYieldTool: options.requireYieldTool,
 			taskDepth: options.taskDepth ?? 0,
 			getSessionFile: () => sessionManager.getSessionFile() ?? null,
 			getPythonKernelOwnerId: () => pythonKernelOwnerId,
@@ -924,6 +940,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			trackPythonExecution: (execution, abortController) =>
 				session ? session.trackPythonExecution(execution, abortController) : execution,
 			getSessionId: () => sessionManager.getSessionId?.() ?? null,
+			getAgentId: () => resolvedAgentId,
+			agentRegistry,
 			getSessionSpawns: () => options.spawns ?? "*",
 			getModelString: () => (hasExplicitModel && model ? formatModelString(model) : undefined),
 			getActiveModelString,
@@ -1047,10 +1065,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		}
 		toolSession.mcpManager = mcpManager;
 
-		// Add Gemini image tools if GEMINI_API_KEY (or GOOGLE_API_KEY) is available
-		const geminiImageTools = await logger.time("getGeminiImageTools", getGeminiImageTools);
-		if (geminiImageTools.length > 0) {
-			customTools.push(...(geminiImageTools as unknown as CustomTool[]));
+		// Add image tools when the active model or configured image providers can generate images.
+		const imageGenTools = await logger.time("getImageGenTools", () => getImageGenTools(modelRegistry, model));
+		if (imageGenTools.length > 0) {
+			customTools.push(...(imageGenTools as unknown as CustomTool[]));
 		}
 
 		// Add web search tools
@@ -1585,6 +1603,28 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			asyncJobManager,
 		});
 		hasSession = true;
+
+		// Register this session in the global agent registry so other agents can
+		// address it via the irc tool. Wrap dispose to unregister on teardown.
+		agentRegistry.register({
+			id: resolvedAgentId,
+			displayName: resolvedAgentDisplayName,
+			kind: (options.taskDepth ?? 0) > 0 || options.parentTaskPrefix ? "sub" : "main",
+			parentId: options.parentTaskPrefix,
+			session,
+			sessionFile: sessionManager.getSessionFile() ?? null,
+			status: "running",
+		});
+		{
+			const originalDispose = session.dispose.bind(session);
+			session.dispose = async () => {
+				try {
+					await originalDispose();
+				} finally {
+					agentRegistry.unregister(resolvedAgentId);
+				}
+			};
+		}
 
 		if (model?.api === "openai-codex-responses") {
 			const codexModel = model;

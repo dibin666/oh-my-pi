@@ -36,6 +36,7 @@ import { loginAnthropic } from "./utils/oauth/anthropic";
 import { loginCerebras } from "./utils/oauth/cerebras";
 import { loginCloudflareAiGateway } from "./utils/oauth/cloudflare-ai-gateway";
 import { loginCursor } from "./utils/oauth/cursor";
+import { loginFireworks } from "./utils/oauth/fireworks";
 import { loginGitHubCopilot } from "./utils/oauth/github-copilot";
 import { loginGitLabDuo } from "./utils/oauth/gitlab-duo";
 import { loginAntigravity } from "./utils/oauth/google-antigravity";
@@ -51,6 +52,7 @@ import { loginMoonshot } from "./utils/oauth/moonshot";
 import { loginNanoGPT } from "./utils/oauth/nanogpt";
 import { loginNvidia } from "./utils/oauth/nvidia";
 import { loginOllama } from "./utils/oauth/ollama";
+import { loginOllamaCloud } from "./utils/oauth/ollama-cloud";
 import { loginOpenAICodex } from "./utils/oauth/openai-codex";
 import { loginOpenCode } from "./utils/oauth/opencode";
 import { loginParallel } from "./utils/oauth/parallel";
@@ -838,8 +840,18 @@ export class AuthStorage {
 				await saveApiKeyCredential(apiKey);
 				return;
 			}
+			case "ollama-cloud": {
+				const apiKey = await loginOllamaCloud(ctrl);
+				await saveApiKeyCredential(apiKey);
+				return;
+			}
 			case "cerebras": {
 				const apiKey = await loginCerebras(ctrl);
+				await saveApiKeyCredential(apiKey);
+				return;
+			}
+			case "fireworks": {
+				const apiKey = await loginFireworks(ctrl);
 				await saveApiKeyCredential(apiKey);
 				return;
 			}
@@ -1711,6 +1723,11 @@ export class AuthStorage {
 			}),
 		);
 
+		// Skip the Pro-plan filter when no candidate is confirmed Pro, so users with only
+		// non-Pro accounts can still attempt Spark requests (e.g. trial/grandfathered access).
+		const enforceProRequirement =
+			requiresProModel && candidates.some(candidate => hasOpenAICodexProPlan(candidate.usage));
+
 		const fallback = candidates[0];
 
 		for (const candidate of candidates) {
@@ -1719,6 +1736,7 @@ export class AuthStorage {
 				allowBlocked: false,
 				prefetchedUsage: candidate.usage,
 				usagePrechecked: candidate.usageChecked,
+				enforceProRequirement,
 			});
 			if (apiKey) return apiKey;
 		}
@@ -1729,6 +1747,7 @@ export class AuthStorage {
 				allowBlocked: true,
 				prefetchedUsage: fallback.usage,
 				usagePrechecked: fallback.usageChecked,
+				enforceProRequirement,
 			});
 		}
 
@@ -1774,14 +1793,22 @@ export class AuthStorage {
 			allowBlocked: boolean;
 			prefetchedUsage?: UsageReport | null;
 			usagePrechecked?: boolean;
+			enforceProRequirement?: boolean;
 		},
 	): Promise<string | undefined> {
-		const { checkUsage, allowBlocked, prefetchedUsage = null, usagePrechecked = false } = usageOptions;
+		const {
+			checkUsage,
+			allowBlocked,
+			prefetchedUsage = null,
+			usagePrechecked = false,
+			enforceProRequirement,
+		} = usageOptions;
 		if (!allowBlocked && this.#isCredentialBlocked(providerKey, selection.index)) {
 			return undefined;
 		}
 
 		const requiresProModel = requiresOpenAICodexProModel(provider, options?.modelId);
+		const applyProFilter = enforceProRequirement ?? requiresProModel;
 		let usage: UsageReport | null = null;
 		let usageChecked = false;
 
@@ -1796,7 +1823,7 @@ export class AuthStorage {
 				});
 				usageChecked = true;
 			}
-			if (requiresProModel && !hasOpenAICodexProPlan(usage)) {
+			if (applyProFilter && !hasOpenAICodexProPlan(usage)) {
 				return undefined;
 			}
 			if (checkUsage && !allowBlocked && usage && this.#isUsageLimitReached(usage)) {
@@ -1846,7 +1873,7 @@ export class AuthStorage {
 					});
 					usageChecked = true;
 				}
-				if (requiresProModel && !hasOpenAICodexProPlan(usage)) {
+				if (applyProFilter && !hasOpenAICodexProPlan(usage)) {
 					return undefined;
 				}
 				if (checkUsage && !allowBlocked && usage && this.#isUsageLimitReached(usage)) {

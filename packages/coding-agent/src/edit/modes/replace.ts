@@ -977,13 +977,14 @@ export function findContextLine(
 }
 
 export const replaceEditEntrySchema = Type.Object({
-	path: Type.String({ description: "File path (relative or absolute)" }),
+	path: Type.Optional(Type.String({ description: "File path (omit to use top-level `path`)" })),
 	old_text: Type.String({ description: "Text to find (fuzzy whitespace matching enabled)" }),
 	new_text: Type.String({ description: "Replacement text" }),
 	all: Type.Optional(Type.Boolean({ description: "Replace all occurrences (default: unique match required)" })),
 });
 
 export const replaceEditSchema = Type.Object({
+	path: Type.Optional(Type.String({ description: "Default file path used when an edit omits its own `path`" })),
 	edits: Type.Array(replaceEditEntrySchema, { description: "Replacements", minItems: 1 }),
 });
 
@@ -1001,13 +1002,6 @@ export interface ExecuteReplaceSingleOptions {
 	beginDeferredDiagnosticsForPath: (path: string) => WritethroughDeferredHandle;
 }
 
-export function isReplaceParams(params: unknown): params is ReplaceParams {
-	if (typeof params !== "object" || params === null) return false;
-	if (!("edits" in params) || !Array.isArray((params as any).edits)) return false;
-	const first = (params as any).edits[0];
-	return first && typeof first === "object" && "old_text" in first && "new_text" in first;
-}
-
 export async function executeReplaceSingle(
 	options: ExecuteReplaceSingleOptions,
 ): Promise<AgentToolResult<EditToolDetails, typeof replaceEditEntrySchema>> {
@@ -1022,6 +1016,9 @@ export async function executeReplaceSingle(
 		beginDeferredDiagnosticsForPath,
 	} = options;
 	const { path, old_text, new_text, all } = params;
+	if (typeof path !== "string" || path.length === 0) {
+		throw new Error("replace edit: missing `path`. Provide `path` on the edit or supply a top-level `path`.");
+	}
 
 	enforcePlanModeWrite(session, path);
 
@@ -1065,9 +1062,7 @@ export async function executeReplaceSingle(
 	}
 
 	if (normalizedContent === result.content) {
-		throw new Error(
-			`No changes made to ${path}. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected.`,
-		);
+		throw new Error(`Edits to ${path} resulted in no changes being made.`);
 	}
 
 	const finalContent = bom + restoreLineEndings(result.content, originalEnding);

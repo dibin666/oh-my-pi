@@ -19,12 +19,12 @@ import {
 	type Api,
 	type AssistantMessage,
 	type Context,
-	isSpecialServiceTier,
 	type Model,
 	type ProviderSessionState,
 	type ServiceTier,
 	type StreamFunction,
 	type StreamOptions,
+	shouldSendServiceTier,
 	type TextContent,
 	type ThinkingContent,
 	type Tool,
@@ -73,27 +73,6 @@ export interface OpenAICodexResponsesOptions extends StreamOptions {
 	toolChoice?: ToolChoice;
 	preferWebsockets?: boolean;
 	serviceTier?: ServiceTier;
-}
-
-export const CODEX_INSTRUCTIONS = `You are an expert coding assistant operating inside pi, a coding agent harness.`;
-
-export interface CodexSystemPrompt {
-	instructions: string;
-	developerMessages: string[];
-}
-
-export function buildCodexSystemPrompt(args: { userSystemPrompt?: string }): CodexSystemPrompt {
-	const { userSystemPrompt } = args;
-	const developerMessages: string[] = [];
-
-	if (userSystemPrompt && userSystemPrompt.trim().length > 0) {
-		developerMessages.push(userSystemPrompt.trim());
-	}
-
-	return {
-		instructions: CODEX_INSTRUCTIONS,
-		developerMessages,
-	};
 }
 
 const CODEX_DEBUG = $flag("PI_CODEX_DEBUG");
@@ -514,7 +493,7 @@ async function buildTransformedCodexRequestBody(
 	if (options?.repetitionPenalty !== undefined) {
 		params.repetition_penalty = options.repetitionPenalty;
 	}
-	if (isSpecialServiceTier(options?.serviceTier)) {
+	if (shouldSendServiceTier(options?.serviceTier, model.provider)) {
 		params.service_tier = options.serviceTier;
 	}
 	if (context.tools && context.tools.length > 0) {
@@ -537,8 +516,7 @@ async function buildTransformedCodexRequestBody(
 		}
 	}
 
-	const systemPrompt = buildCodexSystemPrompt({ userSystemPrompt: context.systemPrompt });
-	params.instructions = systemPrompt.instructions;
+	params.instructions = context.systemPrompt;
 
 	const codexOptions: CodexRequestOptions = {
 		reasoningEffort: options?.reasoning,
@@ -547,7 +525,7 @@ async function buildTransformedCodexRequestBody(
 		include: options?.include,
 	};
 
-	return transformRequestBody(params, model, codexOptions, systemPrompt);
+	return transformRequestBody(params, model, codexOptions);
 }
 
 async function openInitialCodexEventStream(

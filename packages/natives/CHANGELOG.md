@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [14.5.2] - 2026-04-26
+### Changed
+
+- Changed local native build profile from `dev` to `local` for non-CI builds, updating the profile used by the build and local build output label
+
+## [14.4.2] - 2026-04-26
+
+### Removed
+
+- Removed the `chunk` napi module (`ChunkState`, chunk schema, chunk rendering, chunk edit) and dropped `generate_chunk_schema()` from the build script
+
 ## [14.3.0] - 2026-04-25
 ### Added
 

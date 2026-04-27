@@ -955,12 +955,12 @@ export const SETTINGS_SCHEMA = {
 	// Edit tool
 	"edit.mode": {
 		type: "enum",
-		values: ["replace", "patch", "hashline", "chunk", "vim", "apply_patch"] as const,
+		values: ["replace", "patch", "hashline", "vim", "apply_patch", "atom"] as const,
 		default: "hashline",
 		ui: {
 			tab: "editing",
 			label: "Edit Mode",
-			description: "Select the edit tool variant (replace, patch, hashline, chunk, vim, or apply_patch)",
+			description: "Select the edit tool variant (replace, patch, hashline, vim, or apply_patch)",
 		},
 	},
 
@@ -1021,7 +1021,7 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "editing",
 			label: "Hash Lines",
-			description: "Include line hashes in read output for hashline edit mode (LINE#ID:content)",
+			description: "Include line hashes in read output for hashline edit mode (LINE+ID|content)",
 		},
 	},
 
@@ -1043,38 +1043,6 @@ export const SETTINGS_SCHEMA = {
 			tab: "editing",
 			label: "Inline Read Previews",
 			description: "Render read tool results inline in the transcript instead of summary rows",
-		},
-	},
-
-	"read.prosechunks": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "editing",
-			label: "Prose Chunks",
-			description: "Enable chunk rendering for prose files in chunk edit mode",
-		},
-	},
-
-	"read.explorechunks": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "editing",
-			label: "Explore Chunks",
-			description: "Show chunk tree without checksums for read-only agents like explore",
-		},
-	},
-
-	"read.anchorstyle": {
-		type: "enum",
-		values: ["full", "kind", "bare"],
-		default: "full",
-		ui: {
-			tab: "editing",
-			label: "Anchor Style",
-			description: "Render chunk anchors with full names, kind prefixes, or checksum-only tags",
-			submenu: true,
 		},
 	},
 
@@ -1238,7 +1206,7 @@ export const SETTINGS_SCHEMA = {
 
 	"grep.contextBefore": {
 		type: "number",
-		default: 0,
+		default: 1,
 		ui: {
 			tab: "tools",
 			label: "Grep Context Before",
@@ -1249,7 +1217,7 @@ export const SETTINGS_SCHEMA = {
 
 	"grep.contextAfter": {
 		type: "number",
-		default: 0,
+		default: 3,
 		ui: {
 			tab: "tools",
 			label: "Grep Context After",
@@ -1275,6 +1243,16 @@ export const SETTINGS_SCHEMA = {
 			tab: "tools",
 			label: "AST Edit",
 			description: "Enable the ast_edit tool for structural AST rewrites",
+		},
+	},
+
+	"irc.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			label: "IRC",
+			description: "Enable agent-to-agent IRC messaging via the irc tool",
 		},
 	},
 
@@ -1349,7 +1327,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "tools",
 			label: "GitHub CLI",
 			description:
-				"Enable gh_* tools for GitHub repository, issue, pull request, diff, search, checkout, and PR push workflows",
+				"Enable the github tool (op-based dispatch for repository, issue, pull request, diff, search, checkout, push, and Actions watch workflows)",
 		},
 	},
 
@@ -1429,6 +1407,18 @@ export const SETTINGS_SCHEMA = {
 			tab: "tools",
 			label: "Max Async Jobs",
 			description: "Maximum concurrent background jobs (1-100)",
+			submenu: true,
+		},
+	},
+
+	"async.pollWaitDuration": {
+		type: "enum",
+		values: ["5s", "10s", "30s", "1m", "5m"] as const,
+		default: "30s",
+		ui: {
+			tab: "tools",
+			label: "Poll Wait Duration",
+			description: "How long the poll tool waits for background job updates before returning the current state",
 			submenu: true,
 		},
 	},
@@ -1691,6 +1681,7 @@ export const SETTINGS_SCHEMA = {
 			"kagi",
 			"synthetic",
 			"parallel",
+			"searxng",
 		] as const,
 		default: "auto",
 		ui: {
@@ -1702,7 +1693,7 @@ export const SETTINGS_SCHEMA = {
 	},
 	"providers.image": {
 		type: "enum",
-		values: ["auto", "gemini", "openrouter"] as const,
+		values: ["auto", "openai", "gemini", "openrouter"] as const,
 		default: "auto",
 		ui: {
 			tab: "providers",
@@ -1769,6 +1760,47 @@ export const SETTINGS_SCHEMA = {
 		type: "boolean",
 		default: false,
 		ui: { tab: "providers", label: "Exa Websets", description: "Webset management and enrichment tools" },
+	},
+
+	// SearXNG
+	"searxng.endpoint": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "providers",
+			label: "SearXNG Endpoint",
+			description: "Base URL of the SearXNG instance (e.g. https://searx.example.org)",
+		},
+	},
+
+	"searxng.token": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "providers",
+			label: "SearXNG Token",
+			description: "Optional bearer token for SearXNG authentication",
+		},
+	},
+
+	"searxng.categories": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "providers",
+			label: "SearXNG Categories",
+			description: "Comma-separated categories filter (e.g. general,news,science)",
+		},
+	},
+
+	"searxng.language": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "providers",
+			label: "SearXNG Language",
+			description: "Language code for search results (e.g. en, zh-CN)",
+		},
 	},
 
 	"commit.mapReduceEnabled": { type: "boolean", default: true },

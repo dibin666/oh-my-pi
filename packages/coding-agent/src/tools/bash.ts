@@ -42,20 +42,19 @@ async function saveBashOriginalArtifact(session: ToolSession, originalText: stri
 }
 
 const bashSchemaBase = Type.Object({
-	command: Type.String({ description: "Command to execute" }),
+	command: Type.String({ description: "command to execute", examples: ["ls -la", "echo hi"] }),
 	env: Type.Optional(
 		Type.Record(Type.String({ pattern: BASH_ENV_NAME_PATTERN.source }), Type.String(), {
-			description:
-				"Additional environment variables passed to the command and rendered inline as shell assignments; prefer this for multiline or quote-heavy content",
+			description: "extra env vars",
 		}),
 	),
-	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds", default: 300 })),
-	cwd: Type.Optional(Type.String({ description: "Working directory (default: cwd)" })),
-	head: Type.Optional(Type.Number({ description: "Return only first N lines of output" })),
-	tail: Type.Optional(Type.Number({ description: "Return only last N lines of output" })),
+	timeout: Type.Optional(Type.Number({ description: "timeout in seconds", default: 300 })),
+	cwd: Type.Optional(Type.String({ description: "working directory", examples: ["src/", "/tmp"] })),
+	head: Type.Optional(Type.Number({ description: "first n lines of output" })),
+	tail: Type.Optional(Type.Number({ description: "last n lines of output" })),
 	pty: Type.Optional(
 		Type.Boolean({
-			description: "Run in PTY mode when command needs a real terminal (e.g. sudo/ssh/top/less); default: false",
+			description: "run in pty mode",
 		}),
 	),
 });
@@ -64,7 +63,7 @@ const bashSchemaWithAsync = Type.Object({
 	...bashSchemaBase.properties,
 	async: Type.Optional(
 		Type.Boolean({
-			description: "Run in background; returns immediately with a job ID. Result delivered as follow-up.",
+			description: "run in background",
 		}),
 	),
 });
@@ -347,7 +346,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		}
 		lines.push(`Background job ${jobId} started: ${label}`);
 		lines.push("Result will be delivered automatically when complete.");
-		lines.push(`Use \`poll\`, \`read jobs://${jobId}\`, or \`cancel_job\` if needed.`);
+		lines.push(`Use \`job\` (with \`poll\` or \`cancel\`) or \`read jobs://${jobId}\` if needed.`);
 		return {
 			content: [{ type: "text", text: lines.join("\n") }],
 			details,

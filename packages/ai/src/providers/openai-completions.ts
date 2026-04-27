@@ -14,14 +14,15 @@ import { getEnvApiKey } from "../stream";
 import {
 	type AssistantMessage,
 	type Context,
-	isSpecialServiceTier,
 	type Message,
 	type MessageAttribution,
 	type Model,
+	type ProviderSessionState,
 	type ServiceTier,
 	type StopReason,
 	type StreamFunction,
 	type StreamOptions,
+	shouldSendServiceTier,
 	type TextContent,
 	type ThinkingContent,
 	type Tool,
@@ -31,6 +32,7 @@ import {
 } from "../types";
 import { createAbortSourceTracker } from "../utils/abort";
 import { AssistantMessageEventStream } from "../utils/event-stream";
+import { toFireworksWireModelId } from "../utils/fireworks-model-id";
 import {
 	type CapturedHttpErrorResponse,
 	finalizeErrorMessage,
@@ -139,6 +141,56 @@ type BuiltOpenAICompletionTools = {
 	toolStrictMode: AppliedToolStrictMode;
 };
 
+const OPENAI_COMPLETIONS_PROVIDER_SESSION_STATE_PREFIX = "openai-completions:";
+
+type OpenAICompletionsProviderSessionState = ProviderSessionState & {
+	strictToolsDisabled: boolean;
+};
+
+function createOpenAICompletionsProviderSessionState(): OpenAICompletionsProviderSessionState {
+	const state: OpenAICompletionsProviderSessionState = {
+		strictToolsDisabled: false,
+		close: () => {
+			state.strictToolsDisabled = false;
+		},
+	};
+	return state;
+}
+
+function getOpenAICompletionsProviderSessionState(
+	model: Model<"openai-completions">,
+	baseUrl: string | undefined,
+	providerSessionState: Map<string, ProviderSessionState> | undefined,
+): OpenAICompletionsProviderSessionState | undefined {
+	if (!providerSessionState) return undefined;
+	const key = `${OPENAI_COMPLETIONS_PROVIDER_SESSION_STATE_PREFIX}${model.provider}:${baseUrl ?? ""}:${model.id}`;
+	const existing = providerSessionState.get(key) as OpenAICompletionsProviderSessionState | undefined;
+	if (existing) return existing;
+	const created = createOpenAICompletionsProviderSessionState();
+	providerSessionState.set(key, created);
+	return created;
+}
+
+function isOpenRouterAnthropicModel(model: Model<"openai-completions">): boolean {
+	return model.provider === "openrouter" && model.id.toLowerCase().startsWith("anthropic/");
+}
+
+function isCompiledGrammarTooLargeStrictError(
+	error: unknown,
+	capturedErrorResponse: CapturedHttpErrorResponse | undefined,
+): boolean {
+	const status = extractHttpStatusFromError(error) ?? capturedErrorResponse?.status;
+	if (status !== 400) return false;
+	const messageParts = [error instanceof Error ? error.message : undefined, capturedErrorResponse?.bodyText]
+		.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+		.join("\n");
+	return (
+		/invalid_request_error/i.test(messageParts) &&
+		/compiled grammar/i.test(messageParts) &&
+		/too large/i.test(messageParts)
+	);
+}
+
 // LIMITATION: The think tag parser uses naive string matching for <think>/<thinking> tags.
 // If MiniMax models output these literal strings in code blocks, XML examples, or explanations,
 // they will be incorrectly consumed as thinking delimiters, truncating visible output.
@@ -175,6 +227,39 @@ function getTrailingPartialTag(text: string, tags: readonly string[]): string {
 	}
 	if (maxLength === 0) return "";
 	return text.slice(-maxLength);
+}
+
+// DeepSeek models leak chat-template special tokens (e.g. `<｜tool_calls_begin｜>`,
+// `<｜DSML｜tool_calls｜>`) into visible `content` deltas when hosted behind providers
+// (such as NVIDIA NIM) that don't strip them server-side. The structured `tool_calls`
+// payload is still emitted correctly — we only need to filter the leaked markers from
+// user-visible text. Tokens use either fullwidth pipes (｜, U+FF5C) or ASCII pipes.
+// Body is restricted to identifier-like chars (with the DeepSeek tokenizer's `▁`),
+// capped at a sane length to avoid swallowing legitimate angle-bracket text.
+const DEEPSEEK_SPECIAL_TOKEN_REGEX = /<(?:｜|\|)[A-Za-z0-9_.｜|▁]{1,64}(?:｜|\|)>/g;
+const DEEPSEEK_OPEN_DELIMS = ["<｜", "<|"] as const;
+
+function stripDeepseekSpecialTokens(text: string): string {
+	return text.replace(DEEPSEEK_SPECIAL_TOKEN_REGEX, "");
+}
+
+// Find any trailing partial `<｜...` (or `<|...`) that has not yet been closed by a
+// matching `｜>`/`|>`, so it can be held back until the next chunk arrives. A solo
+// trailing `<` is also held in case it is the start of a new token.
+function getTrailingPartialDeepseekToken(text: string): string {
+	let bestIdx = -1;
+	for (const delim of DEEPSEEK_OPEN_DELIMS) {
+		const idx = text.lastIndexOf(delim);
+		if (idx > bestIdx) bestIdx = idx;
+	}
+	if (bestIdx === -1) {
+		return text.endsWith("<") ? "<" : "";
+	}
+	const tail = text.slice(bestIdx);
+	if (tail.includes("｜>") || tail.includes("|>")) return "";
+	// Cap the held-back length so a stray `<｜` in normal prose can't grow unboundedly.
+	if (tail.length > 256) return "";
+	return tail;
 }
 
 const OPENAI_COMPLETIONS_FIRST_EVENT_TIMEOUT_MESSAGE =
@@ -227,9 +312,23 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 			} = await createClient(model, context, apiKey, options?.headers, options?.initiatorOverride);
 			getCapturedErrorResponse = captureErrorResponse;
 			let appliedToolStrictMode: AppliedToolStrictMode = "mixed";
+			const providerSessionState = getOpenAICompletionsProviderSessionState(
+				model,
+				baseUrl,
+				options?.providerSessionState,
+			);
+			let disableStrictTools = providerSessionState?.strictToolsDisabled ?? false;
+			let strictFallbackErrorMessage: string | undefined;
 			const createCompletionsStream = async (toolStrictModeOverride?: ToolStrictModeOverride) => {
 				clearCapturedErrorResponse();
-				const { params, toolStrictMode } = buildParams(model, context, options, baseUrl, toolStrictModeOverride);
+				const effectiveToolStrictModeOverride = disableStrictTools ? "none" : toolStrictModeOverride;
+				const { params, toolStrictMode } = buildParams(
+					model,
+					context,
+					options,
+					baseUrl,
+					effectiveToolStrictModeOverride,
+				);
 				appliedToolStrictMode = toolStrictMode;
 				options?.onPayload?.(params);
 				rawRequestDump = {
@@ -251,10 +350,24 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 				});
 			} catch (error) {
 				const capturedErrorResponse = getCapturedErrorResponse();
-				if (!shouldRetryWithoutStrictTools(error, capturedErrorResponse, appliedToolStrictMode, context.tools)) {
-					throw error;
+				if (
+					isOpenRouterAnthropicModel(model) &&
+					!disableStrictTools &&
+					isCompiledGrammarTooLargeStrictError(error, capturedErrorResponse)
+				) {
+					strictFallbackErrorMessage = await finalizeErrorMessage(error, rawRequestDump, capturedErrorResponse);
+					output.errorMessage = strictFallbackErrorMessage;
+					if (providerSessionState) {
+						providerSessionState.strictToolsDisabled = true;
+					}
+					disableStrictTools = true;
+					openaiStream = await createCompletionsStream("none");
+				} else {
+					if (!shouldRetryWithoutStrictTools(error, capturedErrorResponse, appliedToolStrictMode, context.tools)) {
+						throw error;
+					}
+					openaiStream = await createCompletionsStream("none");
 				}
-				openaiStream = await createCompletionsStream("none");
 			}
 			const firstEventWatchdog = createWatchdog(
 				options?.streamFirstEventTimeoutMs ?? getStreamFirstEventTimeoutMs(idleTimeoutMs),
@@ -264,6 +377,10 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 			stream.push({ type: "start", partial: output });
 
 			const parseMiniMaxThinkTags = model.provider === "minimax-code";
+			// NVIDIA NIM and similar OpenAI-compatible hosts return DeepSeek's chat-template
+			// tool-call markers in `delta.content` even though tool calls are also surfaced
+			// structurally. Strip the leaked markers so users don't see raw `<｜...｜>` tokens.
+			const stripDeepseekChatTemplateTokens = model.provider === "nvidia" && /deepseek/i.test(model.id);
 			type OpenAIStreamBlock = TextContent | ThinkingContent | (ToolCall & { partialArgs: string });
 			let currentBlock: OpenAIStreamBlock | undefined;
 			const blockIndex = (block: OpenAIStreamBlock | undefined): number => {
@@ -384,6 +501,22 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 				}
 			};
 
+			let deepseekStripBuffer = "";
+			const flushDeepseekStripBuffer = (final: boolean): void => {
+				if (deepseekStripBuffer.length === 0) return;
+				let flushable: string;
+				if (final) {
+					flushable = deepseekStripBuffer;
+					deepseekStripBuffer = "";
+				} else {
+					const trailing = getTrailingPartialDeepseekToken(deepseekStripBuffer);
+					flushable = deepseekStripBuffer.slice(0, deepseekStripBuffer.length - trailing.length);
+					deepseekStripBuffer = trailing;
+				}
+				const stripped = stripDeepseekSpecialTokens(flushable);
+				if (stripped) appendTextDelta(stripped);
+			};
+
 			for await (const chunk of iterateWithIdleTimeout(openaiStream, {
 				watchdog: firstEventWatchdog,
 				idleTimeoutMs,
@@ -428,6 +561,9 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 						if (parseMiniMaxThinkTags) {
 							taggedTextBuffer += choice.delta.content;
 							flushTaggedTextBuffer();
+						} else if (stripDeepseekChatTemplateTokens) {
+							deepseekStripBuffer += choice.delta.content;
+							flushDeepseekStripBuffer(false);
 						} else {
 							appendTextDelta(choice.delta.content);
 						}
@@ -524,6 +660,10 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 				taggedTextBuffer = "";
 			}
 
+			if (stripDeepseekChatTemplateTokens) {
+				flushDeepseekStripBuffer(true);
+			}
+
 			finishCurrentBlock(currentBlock);
 
 			const firstEventTimeoutError = abortTracker.getLocalAbortReason();
@@ -541,6 +681,7 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 				throw new Error(output.errorMessage || "Provider returned an error stop reason");
 			}
 
+			output.errorMessage = strictFallbackErrorMessage;
 			output.duration = Date.now() - startTime;
 			if (firstTokenTime) output.ttft = firstTokenTime - startTime;
 			stream.push({ type: "done", reason: output.stopReason, message: output });
@@ -614,6 +755,16 @@ async function createClient(
 		copilotPremiumRequests = copilot.premiumRequests;
 		baseUrl = resolveGitHubCopilotBaseUrl(model.baseUrl, rawApiKey) ?? model.baseUrl;
 	}
+	// Azure OpenAI requires /deployments/{id}/chat/completions?api-version=YYYY-MM-DD.
+	// The generic openai-completions path adds neither, producing silent 404s.
+	let azureDefaultQuery: Record<string, string> | undefined;
+	if (baseUrl?.includes(".openai.azure.com")) {
+		const apiVersion = $env.AZURE_OPENAI_API_VERSION || "2024-10-21";
+		if (!baseUrl.includes("/deployments/")) {
+			baseUrl = `${baseUrl}/deployments/${model.id}`;
+		}
+		azureDefaultQuery = { "api-version": apiVersion };
+	}
 	let capturedErrorResponse: CapturedHttpErrorResponse | undefined;
 	const wrappedFetch = Object.assign(
 		async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -649,6 +800,7 @@ async function createClient(
 			dangerouslyAllowBrowser: true,
 			maxRetries: 5,
 			defaultHeaders: headers,
+			defaultQuery: azureDefaultQuery,
 			fetch: wrappedFetch,
 		}),
 		copilotPremiumRequests,
@@ -679,8 +831,9 @@ function buildParams(
 	const isKimi = model.id.includes("moonshotai/kimi");
 	const effectiveMaxTokens = options?.maxTokens ?? (isKimi ? model.maxTokens : undefined);
 
+	const requestModelId = model.provider === "fireworks" ? toFireworksWireModelId(model.id) : model.id;
 	const params: OpenAICompletionsSamplingParams = {
-		model: model.id,
+		model: requestModelId,
 		messages,
 		stream: true,
 	};
@@ -720,7 +873,7 @@ function buildParams(
 	if (options?.repetitionPenalty !== undefined) {
 		params.repetition_penalty = options.repetitionPenalty;
 	}
-	if (isSpecialServiceTier(options?.serviceTier)) {
+	if (shouldSendServiceTier(options?.serviceTier, model.provider)) {
 		params.service_tier = options.serviceTier;
 	}
 
@@ -1059,12 +1212,21 @@ export function convertMessages(
 				(assistantMsg as any).reasoning_content !== undefined ||
 				(assistantMsg as any).reasoning !== undefined ||
 				(assistantMsg as any).reasoning_text !== undefined;
-			if (
-				toolCalls.length > 0 &&
+			// Inject a `reasoning_content` placeholder on assistant tool-call turns when the backend
+			// rejects history without it. The compat flag captures the rule:
+			//   - Kimi (native or via OpenCode-Go): chat completion endpoint demands the field.
+			//   - Reasoning models reached through OpenRouter (e.g. DeepSeek V4 Pro): the underlying
+			//     provider's thinking-mode validator demands it on every prior assistant turn. omp
+			//     cannot synthesize real reasoning when the conversation was warmed up by another
+			//     provider whose reasoning is redacted/encrypted (Anthropic) or simply absent, so we
+			//     emit a placeholder. Real captured reasoning, when present, is preserved earlier via
+			//     the `thinkingSignature` echo path and short-circuits via `hasReasoningField`.
+			// `thinkingFormat` is gated to formats that consume the field (openai/openrouter chat
+			// completions); formats with their own conventions (zai, qwen) are excluded.
+			const stubsReasoningContent =
 				compat.requiresReasoningContentForToolCalls &&
-				compat.thinkingFormat === "openai" &&
-				!hasReasoningField
-			) {
+				(compat.thinkingFormat === "openai" || compat.thinkingFormat === "openrouter");
+			if (toolCalls.length > 0 && stubsReasoningContent && !hasReasoningField) {
 				const reasoningField = compat.reasoningContentField ?? "reasoning_content";
 				(assistantMsg as any)[reasoningField] = ".";
 			}
@@ -1094,6 +1256,10 @@ export function convertMessages(
 				if (reasoningDetails.length > 0) {
 					(assistantMsg as any).reasoning_details = reasoningDetails;
 				}
+			}
+			// DeepSeek requires non-null content when reasoning_content is present
+			if (assistantMsg.content === null && hasReasoningField) {
+				assistantMsg.content = "";
 			}
 			// Skip assistant messages that have no content, no tool calls, and no reasoning payload.
 			// Some OpenAI-compatible backends require replaying reasoning-only assistant turns

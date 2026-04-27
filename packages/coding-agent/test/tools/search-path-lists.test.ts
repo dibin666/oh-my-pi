@@ -84,7 +84,7 @@ describe("search tool path lists", () => {
 		expect(text).toContain("# apps");
 		expect(text).toContain("# packages");
 		expect(text).toContain("# phases");
-		expect(text).toContain("## └─ grep.txt");
+		expect(text).toContain("## grep.txt");
 		expect(text).not.toContain("# other");
 		expect(details?.fileCount).toBe(3);
 		expect(details?.scopePath).toBe("apps/, packages/, phases/");
@@ -134,11 +134,8 @@ describe("search tool path lists", () => {
 		if (!tool) throw new Error("Missing ast_grep tool");
 
 		const result = await tool.execute("ast-grep-quoted-path", {
-			pat: ["providerOptions"],
-			sel: "identifier",
-			lang: "typescript",
-			path: '"packages/"',
-			glob: '"**/*.ts"',
+			pat: "providerOptions",
+			path: '"packages/**/*.ts"',
 		});
 		const text = getText(result);
 		const details = result.details as { fileCount?: number; scopePath?: string } | undefined;
@@ -156,11 +153,8 @@ describe("search tool path lists", () => {
 		if (!tool) throw new Error("Missing ast_grep tool");
 
 		const result = await tool.execute("ast-grep-comma-paths", {
-			pat: ["providerOptions"],
-			sel: "identifier",
-			lang: "typescript",
-			path: "apps/,packages/,phases/",
-			glob: "**/*.ts",
+			pat: "providerOptions",
+			path: "apps/**/*.ts,packages/**/*.ts,phases/**/*.ts",
 		});
 		const text = getText(result);
 		const details = result.details as { fileCount?: number; scopePath?: string } | undefined;
@@ -168,10 +162,10 @@ describe("search tool path lists", () => {
 		expect(text).toContain("# apps");
 		expect(text).toContain("# packages");
 		expect(text).toContain("# phases");
-		expect(text).toContain("## └─ ast.ts");
+		expect(text).toContain("## ast.ts");
 		expect(text).not.toContain("# other");
 		expect(details?.fileCount).toBe(3);
-		expect(details?.scopePath).toBe("apps/, packages/, phases/");
+		expect(details?.scopePath).toBe("apps/**/*.ts, packages/**/*.ts, phases/**/*.ts");
 	});
 
 	it("ast_edit applies across a space-separated path list", async () => {
@@ -189,9 +183,7 @@ describe("search tool path lists", () => {
 
 		const preview = await tool.execute("ast-edit-space-paths", {
 			ops: [{ pat: "legacyWrap($A, $B)", out: "modernWrap($A, $B)" }],
-			lang: "typescript",
-			path: "apps/ packages/ phases/",
-			glob: "**/*.ts",
+			path: "apps/**/*.ts packages/**/*.ts phases/**/*.ts",
 		});
 		const text = getText(preview);
 		const details = preview.details as { totalReplacements?: number; scopePath?: string } | undefined;
@@ -199,10 +191,10 @@ describe("search tool path lists", () => {
 		expect(text).toContain("# apps");
 		expect(text).toContain("# packages");
 		expect(text).toContain("# phases");
-		expect(text).toContain("## └─ ast.ts (1 replacement)");
+		expect(text).toContain("## ast.ts (1 replacement)");
 		expect(text).not.toContain("# other");
 		expect(details?.totalReplacements).toBe(3);
-		expect(details?.scopePath).toBe("apps/, packages/, phases/");
+		expect(details?.scopePath).toBe("apps/**/*.ts, packages/**/*.ts, phases/**/*.ts");
 
 		queue.nextToolChoice();
 		const invoker = queue.peekInFlightInvoker();
@@ -319,7 +311,6 @@ describe("search tool path lists", () => {
 		const result = await tool.execute("grep-no-empty-headings", {
 			pattern: "shared-needle",
 			path: "apps/,packages/,phases/",
-			limit: 2,
 		});
 		const lines = getText(result).split("\n");
 
@@ -335,10 +326,14 @@ describe("search tool path lists", () => {
 		}
 	});
 
-	it("grep explains context-line gutters without changing match and context separators", async () => {
+	it("grep explains match and context gutters with new format", async () => {
 		await Bun.write(path.join(tempDir, "context.txt"), "#if FLAG\nneedle\n#endif\n");
 
-		const tools = await createTools(createTestSession(tempDir));
+		const tools = await createTools(
+			createTestSession(tempDir, {
+				settings: Settings.isolated({ "grep.contextBefore": 1, "grep.contextAfter": 1 }),
+			}),
+		);
 		const tool = tools.find(entry => entry.name === "grep");
 		expect(tool).toBeDefined();
 		if (!tool) throw new Error("Missing grep tool");
@@ -346,14 +341,11 @@ describe("search tool path lists", () => {
 		const result = await tool.execute("grep-context-label", {
 			pattern: "needle",
 			path: "context.txt",
-			pre: 1,
-			post: 1,
 		});
 		const text = getText(result);
 
-		expect(text).toContain("match lines use ':'; context lines use '-'");
-		expect(text).toMatch(/1(?:#[A-Z0-9]+)?-#if FLAG/);
-		expect(text).toMatch(/2(?:#[A-Z0-9]+)?:needle/);
-		expect(text).toMatch(/3(?:#[A-Z0-9]+)?-#endif/);
+		expect(text).toMatch(/ 1(?:[a-z]{2})?\|#if FLAG/);
+		expect(text).toMatch(/\*2(?:[a-z]{2})?\|needle/);
+		expect(text).toMatch(/ 3(?:[a-z]{2})?\|#endif/);
 	});
 });

@@ -63,6 +63,7 @@ export function detectOpenAICompat(model: Model<"openai-completions">, resolvedB
 		baseUrl.includes("mistral.ai") ||
 		baseUrl.includes("chutes.ai") ||
 		baseUrl.includes("deepseek.com") ||
+		baseUrl.includes("fireworks.ai") ||
 		isAlibaba ||
 		isZai ||
 		isQwen ||
@@ -70,7 +71,11 @@ export function detectOpenAICompat(model: Model<"openai-completions">, resolvedB
 		provider === "opencode-go" ||
 		baseUrl.includes("opencode.ai");
 
-	const useMaxTokens = provider === "mistral" || baseUrl.includes("mistral.ai") || baseUrl.includes("chutes.ai");
+	const useMaxTokens =
+		provider === "mistral" ||
+		baseUrl.includes("mistral.ai") ||
+		baseUrl.includes("chutes.ai") ||
+		baseUrl.includes("fireworks.ai");
 	const isGrok = provider === "xai" || baseUrl.includes("api.x.ai");
 	const isMistral = provider === "mistral" || baseUrl.includes("mistral.ai");
 
@@ -105,7 +110,14 @@ export function detectOpenAICompat(model: Model<"openai-completions">, resolvedB
 					? "qwen"
 					: "openai",
 		reasoningContentField: "reasoning_content",
-		requiresReasoningContentForToolCalls: isKimiModel,
+		// Backends that 400 follow-up requests when prior assistant tool-call turns lack `reasoning_content`:
+		//   - Kimi: documented invariant on its native API and via OpenCode-Go.
+		//   - Any reasoning-capable model reached through OpenRouter: DeepSeek V4 Pro and similar enforce
+		//     this server-side whenever the request is in thinking mode. We can't translate Anthropic's
+		//     redacted/encrypted reasoning into DeepSeek's plaintext form, so cross-provider continuations
+		//     rely on a placeholder — see `convertMessages` for the placeholder injection.
+		requiresReasoningContentForToolCalls:
+			isKimiModel || ((provider === "openrouter" || baseUrl.includes("openrouter.ai")) && Boolean(model.reasoning)),
 		requiresAssistantContentForToolCalls: isKimiModel,
 		openRouterRouting: undefined,
 		vercelGatewayRouting: undefined,

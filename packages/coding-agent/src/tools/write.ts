@@ -44,8 +44,8 @@ import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 
 const writeSchema = Type.Object({
-	path: Type.String({ description: "Path to the file to write (relative or absolute)" }),
-	content: Type.String({ description: "Content to write to the file" }),
+	path: Type.String({ description: "file path", examples: ["src/new.ts"] }),
+	content: Type.String({ description: "file content" }),
 });
 
 export type WriteToolInput = Static<typeof writeSchema>;
@@ -59,7 +59,7 @@ export interface WriteToolDetails {
 /**
  * Strip hashline display prefixes from write content.
  *
- * Only active when hashline edit mode is enabled — the model sees `LINE#ID:`
+ * Only active when hashline edit mode is enabled — the model sees `LINE+ID|`
  * prefixes in read output and sometimes copies them into write content.
  */
 function stripWriteContent(session: ToolSession, content: string): { text: string; stripped: boolean } {
@@ -418,7 +418,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		context?: AgentToolContext,
 	): Promise<AgentToolResult<WriteToolDetails>> {
 		return untilAborted(signal, async () => {
-			// Strip hashline display prefixes (LINE#ID:) if the model copied them from read output
+			// Strip hashline display prefixes (LINE+ID|) if the model copied them from read output
 			const { text: cleanContent, stripped } = stripWriteContent(this.session, content);
 			const resolvedArchivePath = await this.#resolveArchiveWritePath(path);
 			if (resolvedArchivePath) {

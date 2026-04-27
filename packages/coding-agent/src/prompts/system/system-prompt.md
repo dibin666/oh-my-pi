@@ -168,7 +168,7 @@ Tools:
 
 {{#if intentTracing}}
 <intent-field>
-Every tool has a `{{intentField}}` parameter. Fill it with a concise intent in present participle form, 2-6 words, no period.
+Most tools have a `{{intentField}}` parameter. Fill it with a concise intent in present participle form, 2-6 words, no period.
 </intent-field>
 {{/if}}
 
@@ -193,6 +193,9 @@ You **MUST NOT** use Python or Bash when a specialized tool exists.
 {{#has tools "find"}}- Use `find`, not shell file globbing.{{/has}}
 {{#has tools "edit"}}- Use `edit` for surgical text changes, not `sed`.{{/has}}
 {{/ifAny}}
+
+### Paths
+- For tools that take a `path` (or path-like field), prefer cwd-relative paths for files inside the cwd. Use absolute paths only when targeting files outside the cwd or when expanding `~`.
 
 {{#has tools "lsp"}}
 ### LSP guidance

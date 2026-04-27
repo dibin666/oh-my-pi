@@ -5,7 +5,7 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { $envpos, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import { type Static, Type } from "@sinclair/typebox";
-import { computeLineHash } from "../edit/line-hash";
+import { computeLineHash, HASHLINE_CONTENT_SEPARATOR } from "../edit/line-hash";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { Theme } from "../modes/theme/theme";
 import astEditDescription from "../prompts/tools/ast-edit.md" with { type: "text" };
@@ -13,9 +13,9 @@ import { Ellipsis, Hasher, type RenderCache, renderStatusLine, renderTreeList, t
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import type { ToolSession } from ".";
 import { createFileRecorder, formatResultPath } from "./file-recorder";
+import { formatGroupedFiles } from "./grouped-file-output";
 import type { OutputMeta } from "./output-meta";
 import {
-	combineSearchGlobs,
 	hasGlobPathChars,
 	normalizePathLikeInput,
 	parseSearchPath,
@@ -24,6 +24,7 @@ import {
 } from "./path-utils";
 import {
 	dedupeParseErrors,
+	formatCodeFrameLine,
 	formatCount,
 	formatEmptyMessage,
 	formatErrorMessage,
@@ -36,20 +37,19 @@ import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 
 const astEditOpSchema = Type.Object({
-	pat: Type.String({ description: "AST pattern to match" }),
-	out: Type.String({ description: "Replacement template" }),
+	pat: Type.String({ description: "ast pattern", examples: ["oldFn($$$ARGS)"] }),
+	out: Type.String({ description: "replacement template", examples: ["newFn($$$ARGS)"] }),
 });
 
 const astEditSchema = Type.Object({
 	ops: Type.Array(astEditOpSchema, {
 		minItems: 1,
-		description: "Rewrite ops as [{ pat, out }]",
+		description: "rewrite ops",
 	}),
-	lang: Type.Optional(Type.String({ description: "Language override" })),
-	path: Type.Optional(Type.String({ description: "File, directory, or glob pattern to rewrite (default: cwd)" })),
-	glob: Type.Optional(Type.String({ description: "Optional glob filter relative to path" })),
-	sel: Type.Optional(Type.String({ description: "Optional selector for contextual pattern mode" })),
-	limit: Type.Optional(Type.Number({ description: "Max total replacements" })),
+	path: Type.String({
+		description: "file, directory, glob, or comma-separated paths to rewrite",
+		examples: ["src/", "src/foo.ts", "src/**/*.ts"],
+	}),
 });
 
 export interface AstEditToolDetails {
@@ -63,6 +63,9 @@ export interface AstEditToolDetails {
 	files?: string[];
 	fileReplacements?: Array<{ path: string; count: number }>;
 	meta?: OutputMeta;
+	/** Pre-formatted text for the user-visible TUI render. Mirrors `result.text` lines but uses
+	 * a `│` gutter (no model-only hashline anchors). The TUI uses this directly so it never parses model-facing text. */
+	displayContent?: string;
 }
 
 export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolDetails> {
@@ -101,10 +104,6 @@ export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolD
 				seenPatterns.add(pat);
 			}
 			const normalizedRewrites = Object.fromEntries(ops);
-			const maxReplacements = params.limit !== undefined ? Math.floor(params.limit) : undefined;
-			if (maxReplacements !== undefined && (!Number.isFinite(maxReplacements) || maxReplacements < 1)) {
-				throw new ToolError("limit must be a positive number");
-			}
 			const maxFiles = $envpos("PI_MAX_AST_FILES", 1000);
 
 			const formatScopePath = (targetPath: string): string => {
@@ -113,8 +112,11 @@ export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolD
 			};
 			let searchPath: string | undefined;
 			let scopePath: string | undefined;
-			let globFilter = params.glob ? normalizePathLikeInput(params.glob) || undefined : undefined;
-			const rawPath = params.path ? normalizePathLikeInput(params.path) || undefined : undefined;
+			let globFilter: string | undefined;
+			const rawPath = normalizePathLikeInput(params.path);
+			if (rawPath.length === 0) {
+				throw new ToolError("`path` must be a non-empty path or glob");
+			}
 			if (rawPath) {
 				const internalRouter = this.session.internalRouter;
 				if (internalRouter?.canHandle(rawPath)) {
@@ -136,7 +138,7 @@ export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolD
 					} else {
 						const parsedPath = parseSearchPath(rawPath);
 						searchPath = resolveToCwd(parsedPath.basePath, this.session.cwd);
-						globFilter = combineSearchGlobs(parsedPath.glob, globFilter);
+						globFilter = parsedPath.glob;
 						scopePath = formatScopePath(searchPath);
 					}
 				}
@@ -153,12 +155,9 @@ export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolD
 
 			const result = await astEdit({
 				rewrites: normalizedRewrites,
-				lang: params.lang?.trim(),
 				path: resolvedSearchPath,
 				glob: globFilter,
-				selector: params.sel?.trim(),
 				dryRun: true,
-				maxReplacements,
 				maxFiles,
 				failOnParseError: false,
 				signal,
@@ -205,61 +204,52 @@ export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolD
 
 			const useHashLines = resolveFileDisplayMode(this.session).hashLines;
 			const outputLines: string[] = [];
-			const renderChangesForFile = (relativePath: string) => {
+			const displayLines: string[] = [];
+			const renderChangesForFile = (relativePath: string): { model: string[]; display: string[] } => {
+				const modelOut: string[] = [];
+				const displayOut: string[] = [];
 				const fileChanges = changesByFile.get(relativePath) ?? [];
-				const lineWidth =
-					fileChanges.length > 0 ? Math.max(...fileChanges.map(change => change.startLine.toString().length)) : 1;
+				const lineNumberWidth = fileChanges.reduce(
+					(width, change) => Math.max(width, String(change.startLine).length),
+					0,
+				);
 				for (const change of fileChanges) {
 					const beforeFirstLine = change.before.split("\n", 1)[0] ?? "";
 					const afterFirstLine = change.after.split("\n", 1)[0] ?? "";
 					const beforeLine = beforeFirstLine.slice(0, 120);
 					const afterLine = afterFirstLine.slice(0, 120);
 					const beforeRef = useHashLines
-						? `${change.startLine}#${computeLineHash(change.startLine, beforeFirstLine)}`
-						: `${change.startLine.toString().padStart(lineWidth, " ")}:${change.startColumn}`;
+						? `${change.startLine}${computeLineHash(change.startLine, beforeFirstLine)}`
+						: `${change.startLine}:${change.startColumn}`;
 					const afterRef = useHashLines
-						? `${change.startLine}#${computeLineHash(change.startLine, afterFirstLine)}`
-						: `${change.startLine.toString().padStart(lineWidth, " ")}:${change.startColumn}`;
-					const lineSeparator = useHashLines ? ":" : " ";
-					outputLines.push(`-${beforeRef}${lineSeparator}${beforeLine}`);
-					outputLines.push(`+${afterRef}${lineSeparator}${afterLine}`);
+						? `${change.startLine}${computeLineHash(change.startLine, afterFirstLine)}`
+						: `${change.startLine}:${change.startColumn}`;
+					const lineSeparator = useHashLines ? HASHLINE_CONTENT_SEPARATOR : " ";
+					modelOut.push(`-${beforeRef}${lineSeparator}${beforeLine}`);
+					modelOut.push(`+${afterRef}${lineSeparator}${afterLine}`);
+					displayOut.push(formatCodeFrameLine("-", change.startLine, beforeLine, lineNumberWidth));
+					displayOut.push(formatCodeFrameLine("+", change.startLine, afterLine, lineNumberWidth));
 				}
+				return { model: modelOut, display: displayOut };
 			};
 
 			if (isDirectory) {
-				const filesByDirectory = new Map<string, string[]>();
-				for (const relativePath of fileList) {
-					const directory = path.dirname(relativePath).replace(/\\/g, "/");
-					if (!filesByDirectory.has(directory)) {
-						filesByDirectory.set(directory, []);
-					}
-					filesByDirectory.get(directory)!.push(relativePath);
-				}
-				for (const [directory, directoryFiles] of filesByDirectory) {
-					if (directory === ".") {
-						for (const relativePath of directoryFiles) {
-							if (outputLines.length > 0) {
-								outputLines.push("");
-							}
-							const count = fileReplacementCounts.get(relativePath) ?? 0;
-							outputLines.push(`# ${path.basename(relativePath)} (${formatCount("replacement", count)})`);
-							renderChangesForFile(relativePath);
-						}
-						continue;
-					}
-					if (outputLines.length > 0) {
-						outputLines.push("");
-					}
-					outputLines.push(`# ${directory}`);
-					for (const relativePath of directoryFiles) {
-						const count = fileReplacementCounts.get(relativePath) ?? 0;
-						outputLines.push(`## └─ ${path.basename(relativePath)} (${formatCount("replacement", count)})`);
-						renderChangesForFile(relativePath);
-					}
-				}
+				const grouped = formatGroupedFiles(fileList, relativePath => {
+					const rendered = renderChangesForFile(relativePath);
+					const count = fileReplacementCounts.get(relativePath) ?? 0;
+					return {
+						headerSuffix: ` (${formatCount("replacement", count)})`,
+						modelLines: rendered.model,
+						displayLines: rendered.display,
+					};
+				});
+				outputLines.push(...grouped.model);
+				displayLines.push(...grouped.display);
 			} else {
 				for (const relativePath of fileList) {
-					renderChangesForFile(relativePath);
+					const rendered = renderChangesForFile(relativePath);
+					outputLines.push(...rendered.model);
+					displayLines.push(...rendered.display);
 				}
 			}
 
@@ -268,7 +258,7 @@ export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolD
 				count: fileReplacementCounts.get(filePath) ?? 0,
 			}));
 			if (result.limitReached) {
-				outputLines.push("", "Limit reached; narrow path or increase limit.");
+				outputLines.push("", "Limit reached; narrow path.");
 			}
 			if (dedupedParseErrors.length) {
 				outputLines.push("", ...formatParseErrors(dedupedParseErrors));
@@ -284,12 +274,9 @@ export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolD
 					apply: async (_reason: string) => {
 						const applyResult = await astEdit({
 							rewrites: normalizedRewrites,
-							lang: params.lang?.trim(),
 							path: resolvedSearchPath,
 							glob: globFilter,
-							selector: params.sel?.trim(),
 							dryRun: false,
-							maxReplacements,
 							maxFiles,
 							failOnParseError: false,
 						});
@@ -351,6 +338,7 @@ export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolD
 			const details: AstEditToolDetails = {
 				...baseDetails,
 				fileReplacements,
+				displayContent: displayLines.join("\n"),
 			};
 			return toolResult(details).text(outputLines.join("\n")).done();
 		});
@@ -363,10 +351,7 @@ export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolD
 
 interface AstEditRenderArgs {
 	ops?: Array<{ pat?: string; out?: string }>;
-	lang?: string;
 	path?: string;
-	sel?: string;
-	limit?: number;
 }
 
 const COLLAPSED_CHANGE_LIMIT = PREVIEW_LIMITS.COLLAPSED_LINES * 2;
@@ -375,9 +360,7 @@ export const astEditToolRenderer = {
 	inline: true,
 	renderCall(args: AstEditRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const meta: string[] = [];
-		if (args.lang) meta.push(`lang:${args.lang}`);
 		if (args.path) meta.push(`in ${args.path}`);
-		if (args.limit !== undefined) meta.push(`limit:${args.limit}`);
 		const rewriteCount = args.ops?.length ?? 0;
 		if (rewriteCount > 1) meta.push(`${rewriteCount} rewrites`);
 
@@ -432,7 +415,7 @@ export const astEditToolRenderer = {
 		const rewriteCount = args?.ops?.length ?? 0;
 		const description = rewriteCount === 1 ? args?.ops?.[0]?.pat : undefined;
 
-		const textContent = result.content?.find(c => c.type === "text")?.text ?? "";
+		const textContent = result.details?.displayContent ?? result.content?.find(c => c.type === "text")?.text ?? "";
 		const rawLines = textContent.split("\n");
 		const hasSeparators = rawLines.some(line => line.trim().length === 0);
 		const allGroups: string[][] = [];
@@ -467,7 +450,7 @@ export const astEditToolRenderer = {
 
 		const extraLines: string[] = [];
 		if (limitReached) {
-			extraLines.push(uiTheme.fg("warning", "limit reached; narrow path or increase limit"));
+			extraLines.push(uiTheme.fg("warning", "limit reached; narrow path"));
 		}
 		if (details?.parseErrors?.length) {
 			const total = details.parseErrors.length;

@@ -61,6 +61,7 @@ import { InputController } from "./controllers/input-controller";
 import { MCPCommandController } from "./controllers/mcp-command-controller";
 import { SelectorController } from "./controllers/selector-controller";
 import { SSHCommandController } from "./controllers/ssh-command-controller";
+import { TodoCommandController } from "./controllers/todo-command-controller";
 import { OAuthManualInputManager } from "./oauth-manual-input";
 import { SessionObserverRegistry } from "./session-observer-registry";
 import type { Theme } from "./theme/theme";
@@ -79,6 +80,28 @@ const EDITOR_MAX_HEIGHT_MIN = 6;
 const EDITOR_MAX_HEIGHT_MAX = 18;
 const EDITOR_RESERVED_ROWS = 12;
 const EDITOR_FALLBACK_ROWS = 24;
+
+const HUD_NOTE_SUP_DIGITS: Record<string, string> = {
+	"0": "\u2070",
+	"1": "\u00b9",
+	"2": "\u00b2",
+	"3": "\u00b3",
+	"4": "\u2074",
+	"5": "\u2075",
+	"6": "\u2076",
+	"7": "\u2077",
+	"8": "\u2078",
+	"9": "\u2079",
+};
+
+function formatHudNoteMarker(count: number): string {
+	if (count <= 0) return "";
+	const sub = String(count)
+		.split("")
+		.map(d => HUD_NOTE_SUP_DIGITS[d] ?? d)
+		.join("");
+	return theme.fg("dim", chalk.italic(` \u207a${sub}`));
+}
 
 /** Options for creating an InteractiveMode instance (for future API use) */
 export interface InteractiveModeOptions {
@@ -173,6 +196,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	readonly #btwController: BtwController;
 	readonly #commandController: CommandController;
+	readonly #todoCommandController: TodoCommandController;
 	readonly #eventController: EventController;
 	readonly #extensionUiController: ExtensionUiController;
 	readonly #inputController: InputController;
@@ -287,6 +311,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#extensionUiController = new ExtensionUiController(this);
 		this.#eventController = new EventController(this);
 		this.#commandController = new CommandController(this);
+		this.#todoCommandController = new TodoCommandController(this);
 		this.#selectorController = new SelectorController(this);
 		this.#inputController = new InputController(this);
 		this.#observerRegistry = new SessionObserverRegistry();
@@ -563,19 +588,16 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#formatTodoLine(todo: TodoItem, prefix: string): string {
 		const checkbox = theme.checkbox;
+		const marker = formatHudNoteMarker(todo.notes?.length ?? 0);
 		switch (todo.status) {
 			case "completed":
-				return theme.fg("success", `${prefix}${checkbox.checked} ${chalk.strikethrough(todo.content)}`);
-			case "in_progress": {
-				const main = theme.fg("accent", `${prefix}${checkbox.unchecked} ${todo.content}`);
-				if (!todo.details) return main;
-				const detailLines = todo.details.split("\n").map(line => theme.fg("dim", `${prefix}  ${line}`));
-				return [main, ...detailLines].join("\n");
-			}
+				return theme.fg("success", `${prefix}${checkbox.checked} ${chalk.strikethrough(todo.content)}`) + marker;
+			case "in_progress":
+				return theme.fg("accent", `${prefix}${checkbox.unchecked} ${todo.content}`) + marker;
 			case "abandoned":
-				return theme.fg("error", `${prefix}${checkbox.unchecked} ${chalk.strikethrough(todo.content)}`);
+				return theme.fg("error", `${prefix}${checkbox.unchecked} ${chalk.strikethrough(todo.content)}`) + marker;
 			default:
-				return theme.fg("dim", `${prefix}${checkbox.unchecked} ${todo.content}`);
+				return theme.fg("dim", `${prefix}${checkbox.unchecked} ${todo.content}`) + marker;
 		}
 	}
 
@@ -1274,6 +1296,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#commandController.handleCopyCommand(sub);
 	}
 
+	handleTodoCommand(args: string): Promise<void> {
+		return this.#todoCommandController.handleTodoCommand(args);
+	}
+
 	handleSessionCommand(): Promise<void> {
 		return this.#commandController.handleSessionCommand();
 	}
@@ -1298,11 +1324,20 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#commandController.handleToolsCommand();
 	}
 
-	handleClearCommand(): Promise<void> {
+	#prepareSessionSwitch(): void {
 		this.#btwController.dispose();
 		this.#extensionUiController.clearExtensionTerminalInputListeners();
 		this.#planReviewContainer = undefined;
+	}
+
+	handleClearCommand(): Promise<void> {
+		this.#prepareSessionSwitch();
 		return this.#commandController.handleClearCommand();
+	}
+
+	handleDropCommand(): Promise<void> {
+		this.#prepareSessionSwitch();
+		return this.#commandController.handleDropCommand();
 	}
 
 	handleForkCommand(): Promise<void> {

@@ -1,6 +1,5 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { type ChunkAnchorStyle, formatAnchor } from "@oh-my-pi/pi-natives";
 import {
 	getProjectDir,
 	getProjectPromptsDir,
@@ -9,7 +8,7 @@ import {
 	parseFrontmatter,
 	prompt,
 } from "@oh-my-pi/pi-utils";
-import { computeLineHash } from "../edit/line-hash";
+import { computeLineHash, HASHLINE_CONTENT_SEPARATOR } from "../edit/line-hash";
 import { jtdToTypeScript } from "../tools/jtd-to-typescript";
 import { parseCommandArgs, substituteArgs } from "../utils/command-args";
 
@@ -40,55 +39,29 @@ function formatHashlineRef(lineNum: unknown, content: unknown): { num: number; t
 	const num = typeof lineNum === "number" ? lineNum : Number.parseInt(String(lineNum), 10);
 	const raw = typeof content === "string" ? content : String(content ?? "");
 	const text = raw.replace(/\\t/g, "\t").replace(/\\n/g, "\n").replace(/\\r/g, "\r");
-	const ref = `${num}#${computeLineHash(num, text)}`;
+	const ref = `${num}${computeLineHash(num, text)}`;
 	return { num, text, ref };
 }
 
 /**
  * {{href lineNum "content"}} — compute a real hashline ref for prompt examples.
- * Returns `"lineNum#hash"` using the actual hash algorithm.
+ * {{href lineNum "content" "[" "]"}} — wrap the ref with pre/post chars (still quoted).
+ * Returns `"lineNumBIGRAM"` (e.g., `"42nd"`), or `"[42nd]"` when pre/post are supplied.
  */
-prompt.registerHelper("href", (lineNum: unknown, content: unknown): string => {
+prompt.registerHelper("href", (lineNum: unknown, content: unknown, pre?: unknown, post?: unknown): string => {
 	const { ref } = formatHashlineRef(lineNum, content);
-	return JSON.stringify(ref);
+	const preStr = typeof pre === "string" ? pre : "";
+	const postStr = typeof post === "string" ? post : "";
+	return JSON.stringify(`${preStr}${ref}${postStr}`);
 });
 
 /**
  * {{hline lineNum "content"}} — format a full read-style line with prefix.
- * Returns `"lineNum#hash:content"`.
+ * Returns `"lineNumBIGRAM|content"` (pipe between anchor and content).
  */
 prompt.registerHelper("hline", (lineNum: unknown, content: unknown): string => {
 	const { ref, text } = formatHashlineRef(lineNum, content);
-	return `${ref}:${text}`;
-});
-
-/**
- * {{anchor name checksum}} — render a branch anchor tag using the current anchor style.
- * Style is resolved from the template context (`anchorStyle`) or defaults to "full".
- */
-prompt.registerHelper("anchor", function (this: prompt.TemplateContext, name: string, checksum: string): string {
-	const style = (this.anchorStyle as ChunkAnchorStyle) ?? "full";
-	return formatAnchor(name, checksum, style);
-});
-
-/**
- * {{sel "parent_Name.child_Name"}} — render a chunk path for `sel` fields in examples.
- * In `full` style the path is returned as-is (`class_Server.fn_start`).
- * In `kind` style each segment is trimmed to its kind prefix (`class.fn`).
- * In `bare` style the path is omitted (the model uses only `crc` to identify chunks).
- */
-prompt.registerHelper("sel", function (this: prompt.TemplateContext, chunkPath: string): string {
-	const style = (this.anchorStyle as ChunkAnchorStyle) ?? "full";
-	if (style === "full") return chunkPath;
-	if (style === "bare") return "";
-	// kind: trim each segment to its kind prefix (before the first `_`)
-	return chunkPath
-		.split(".")
-		.map(seg => {
-			const idx = seg.indexOf("_");
-			return idx === -1 ? seg : seg.slice(0, idx);
-		})
-		.join(".");
+	return `${ref}${HASHLINE_CONTENT_SEPARATOR}${text}`;
 });
 
 const INLINE_ARG_SHELL_PATTERN = /\$(?:ARGUMENTS|@(?:\[\d+(?::\d*)?\])?|\d+)/;

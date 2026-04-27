@@ -4,8 +4,8 @@
 
 ### Added
 
+- Added per-MCP timeout overrides that can be edited from the Extension Control Center, including disabling the timeout per server
 - Added `retry.autoContinuePartialResponse` in settings so partial-response retry continuation can be toggled from the Model settings menu
-
 ### Fixed
 
 - Fixed retryable upstream transport disconnects after partial streamed output to automatically continue from the partial assistant response instead of requiring a manual follow-up prompt

@@ -21,6 +21,7 @@ import {
 	isProviderEnabled,
 	loadCapability,
 } from "../../../discovery";
+import { applyMcpTimeoutOverrideToServer, loadMcpTimeoutOverrides } from "../../../mcp/timeout-overrides";
 import type {
 	DashboardState,
 	Extension,
@@ -98,6 +99,7 @@ export async function loadAllExtensions(cwd?: string, disabledIds?: string[]): P
 	}
 
 	const loadOpts = cwd ? { cwd, includeDisabled: true } : { includeDisabled: true };
+	const timeoutOverrides = loadMcpTimeoutOverrides(cwd);
 
 	// Load skills
 	try {
@@ -144,10 +146,11 @@ export async function loadAllExtensions(cwd?: string, disabledIds?: string[]): P
 	try {
 		const mcps = await loadCapability<MCPServer>("mcps", loadOpts);
 		for (const server of mcps.all) {
-			const id = makeExtensionId("mcp", server.name);
+			const withTimeoutOverride = applyMcpTimeoutOverrideToServer(server, timeoutOverrides, cwd);
+			const id = makeExtensionId("mcp", withTimeoutOverride.name);
 			const isDisabled = disabledExtensions.has(id);
-			const isShadowed = (server as { _shadowed?: boolean })._shadowed;
-			const providerEnabled = isProviderEnabled(server._source.provider);
+			const isShadowed = (withTimeoutOverride as { _shadowed?: boolean })._shadowed;
+			const providerEnabled = isProviderEnabled(withTimeoutOverride._source.provider);
 
 			let state: ExtensionState;
 			let disabledReason: "shadowed" | "provider-disabled" | "item-disabled" | undefined;
@@ -168,15 +171,15 @@ export async function loadAllExtensions(cwd?: string, disabledIds?: string[]): P
 			extensions.push({
 				id,
 				kind: "mcp",
-				name: server.name,
-				displayName: server.name,
-				description: server.command || server.url,
-				trigger: server.transport || "stdio",
-				path: server._source.path,
-				source: sourceFromMeta(server._source),
+				name: withTimeoutOverride.name,
+				displayName: withTimeoutOverride.name,
+				description: withTimeoutOverride.command || withTimeoutOverride.url,
+				trigger: withTimeoutOverride.transport || "stdio",
+				path: withTimeoutOverride._source.path,
+				source: sourceFromMeta(withTimeoutOverride._source),
 				state,
 				disabledReason,
-				raw: server,
+				raw: withTimeoutOverride,
 			});
 		}
 	} catch (error) {

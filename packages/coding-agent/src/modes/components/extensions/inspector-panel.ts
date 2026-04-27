@@ -5,6 +5,7 @@
  */
 import * as os from "node:os";
 import { type Component, truncateToWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
+import { formatMcpTimeoutDisplay } from "../../../mcp/timeout-overrides";
 import { theme } from "../../../modes/theme/theme";
 import { shortenPath } from "../../../tools/render-utils";
 import type { Extension, ExtensionState } from "./types";
@@ -235,12 +236,24 @@ export class InspectorPanel implements Component {
 		lines.push(theme.fg("dim", theme.boxSharp.horizontal.repeat(Math.min(width - 2, 40))));
 
 		try {
-			const mcp = raw as any;
-			const transport = mcp?.transport || mcp?.type || "unknown";
-			const command = mcp?.command || mcp?.cmd || "";
-			const args = mcp?.args || mcp?.arguments || [];
+			const mcp = raw as {
+				transport?: string;
+				type?: string;
+				command?: string;
+				cmd?: string;
+				args?: string[];
+				arguments?: string[];
+				env?: Record<string, string>;
+				timeout?: number;
+			};
+			const transport = mcp.transport || mcp.type || "unknown";
+			const command = mcp.command || mcp.cmd || "";
+			const args = mcp.args || mcp.arguments || [];
 
 			lines.push(`  ${theme.fg("muted", "Transport:")}  ${theme.fg("accent", transport)}`);
+			lines.push(
+				`  ${theme.fg("muted", "Timeout:")}    ${theme.fg("accent", formatMcpTimeoutDisplay(mcp.timeout))}`,
+			);
 
 			if (command) {
 				lines.push(`  ${theme.fg("muted", "Command:")}    ${theme.fg("success", command)}`);
@@ -250,13 +263,14 @@ export class InspectorPanel implements Component {
 				lines.push(`  ${theme.fg("muted", "Args:")}       ${theme.fg("dim", args.join(" "))}`);
 			}
 
-			// Environment variables if present
-			if (mcp?.env && typeof mcp.env === "object") {
+			if (mcp.env && typeof mcp.env === "object") {
 				const envCount = Object.keys(mcp.env).length;
 				if (envCount > 0) {
 					lines.push(`  ${theme.fg("muted", "Env vars:")}   ${theme.fg("dim", `${envCount} defined`)}`);
 				}
 			}
+
+			lines.push(`  ${theme.fg("muted", "Edit:")}       ${theme.fg("dim", "Ctrl+T in the extensions list")}`);
 		} catch {
 			lines.push(theme.fg("dim", "  (unable to parse MCP configuration)"));
 		}

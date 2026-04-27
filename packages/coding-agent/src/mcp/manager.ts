@@ -111,6 +111,8 @@ export interface MCPDiscoverOptions {
 	onConnecting?: (serverNames: string[]) => void;
 }
 
+export interface MCPReloadOptions extends MCPDiscoverOptions {}
+
 /**
  * MCP Server Manager.
  *
@@ -254,6 +256,11 @@ export class MCPManager {
 		const result = await this.connectServers(configs, sources, options?.onConnecting);
 		result.exaApiKeys = exaApiKeys;
 		return result;
+	}
+
+	async reload(options?: MCPReloadOptions): Promise<MCPLoadResult> {
+		await this.disconnectAll();
+		return this.discoverAndConnect(options);
 	}
 
 	/**

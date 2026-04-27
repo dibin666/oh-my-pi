@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import * as url from "node:url";
-import { toJsonRpcError } from "../src/mcp/types";
+import { resolveMcpTimeoutMs, toJsonRpcError } from "../src/mcp/types";
 
 describe("toJsonRpcError", () => {
 	it("extracts code from Error with .code property", () => {
@@ -34,6 +34,20 @@ describe("toJsonRpcError", () => {
 		expect(toJsonRpcError({ code: 42 })).toEqual({ code: -32603, message: "Internal error" });
 		expect(toJsonRpcError({ message: "hi" })).toEqual({ code: -32603, message: "Internal error" });
 		expect(toJsonRpcError(null)).toEqual({ code: -32603, message: "Internal error" });
+	});
+});
+
+describe("resolveMcpTimeoutMs", () => {
+	it("uses the bundled default when timeout is omitted", () => {
+		expect(resolveMcpTimeoutMs(undefined)).toBe(30_000);
+	});
+
+	it("disables the timeout when set to zero", () => {
+		expect(resolveMcpTimeoutMs(0)).toBeUndefined();
+	});
+
+	it("preserves explicit positive timeouts", () => {
+		expect(resolveMcpTimeoutMs(120_000)).toBe(120_000);
 	});
 });
 

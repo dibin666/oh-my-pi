@@ -7,16 +7,17 @@
 
 import { getProjectDir, readJsonl, Snowflake } from "@oh-my-pi/pi-utils";
 import { type Subprocess, spawn } from "bun";
-import type {
-	JsonRpcError,
-	JsonRpcMessage,
-	JsonRpcRequest,
-	JsonRpcResponse,
-	MCPRequestOptions,
-	MCPStdioServerConfig,
-	MCPTransport,
+import {
+	type JsonRpcError,
+	type JsonRpcMessage,
+	type JsonRpcRequest,
+	type JsonRpcResponse,
+	type MCPRequestOptions,
+	type MCPStdioServerConfig,
+	type MCPTransport,
+	resolveMcpTimeoutMs,
+	toJsonRpcError,
 } from "../../mcp/types";
-import { toJsonRpcError } from "../../mcp/types";
 
 /**
  * Stdio transport for MCP servers.
@@ -208,7 +209,7 @@ export class StdioTransport implements MCPTransport {
 			params: params ?? {},
 		};
 
-		const timeout = this.config.timeout ?? 30000;
+		const timeoutMs = resolveMcpTimeoutMs(this.config.timeout);
 		const signal = options?.signal;
 
 		if (signal?.aborted) {
@@ -254,10 +255,12 @@ export class StdioTransport implements MCPTransport {
 			},
 		});
 
-		timer = setTimeout(() => {
-			cleanup();
-			reject(new Error(`Request timeout after ${timeout}ms`));
-		}, timeout);
+		if (timeoutMs !== undefined) {
+			timer = setTimeout(() => {
+				cleanup();
+				reject(new Error(`Request timeout after ${timeoutMs}ms`));
+			}, timeoutMs);
+		}
 
 		const message = `${JSON.stringify(request)}\n`;
 		try {

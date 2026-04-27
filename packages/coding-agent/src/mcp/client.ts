@@ -8,39 +8,37 @@ import * as url from "node:url";
 import { getProjectDir, logger, withTimeout } from "@oh-my-pi/pi-utils";
 import { createHttpTransport } from "./transports/http";
 import { createStdioTransport } from "./transports/stdio";
-import type {
-	MCPGetPromptParams,
-	MCPGetPromptResult,
-	MCPHttpServerConfig,
-	MCPInitializeParams,
-	MCPInitializeResult,
-	MCPPrompt,
-	MCPPromptsListResult,
-	MCPRequestOptions,
-	MCPResource,
-	MCPResourceReadParams,
-	MCPResourceReadResult,
-	MCPResourceSubscribeParams,
-	MCPResourcesListResult,
-	MCPResourceTemplate,
-	MCPResourceTemplatesListResult,
-	MCPServerCapabilities,
-	MCPServerConfig,
-	MCPServerConnection,
-	MCPSseServerConfig,
-	MCPStdioServerConfig,
-	MCPToolCallParams,
-	MCPToolCallResult,
-	MCPToolDefinition,
-	MCPToolsListResult,
-	MCPTransport,
+import {
+	type MCPGetPromptParams,
+	type MCPGetPromptResult,
+	type MCPHttpServerConfig,
+	type MCPInitializeParams,
+	type MCPInitializeResult,
+	type MCPPrompt,
+	type MCPPromptsListResult,
+	type MCPRequestOptions,
+	type MCPResource,
+	type MCPResourceReadParams,
+	type MCPResourceReadResult,
+	type MCPResourceSubscribeParams,
+	type MCPResourcesListResult,
+	type MCPResourceTemplate,
+	type MCPResourceTemplatesListResult,
+	type MCPServerCapabilities,
+	type MCPServerConfig,
+	type MCPServerConnection,
+	type MCPSseServerConfig,
+	type MCPStdioServerConfig,
+	type MCPToolCallParams,
+	type MCPToolCallResult,
+	type MCPToolDefinition,
+	type MCPToolsListResult,
+	type MCPTransport,
+	resolveMcpTimeoutMs,
 } from "./types";
 
 /** MCP protocol version we support */
 const PROTOCOL_VERSION = "2025-03-26";
-
-/** Default connection timeout in ms */
-const CONNECTION_TIMEOUT_MS = 30_000;
 
 /** Client info sent during initialization */
 const CLIENT_INFO = {
@@ -128,7 +126,7 @@ async function initializeConnection(
 
 /**
  * Connect to an MCP server.
- * Has a 30 second timeout to prevent blocking startup.
+ * Uses a 30 second default timeout unless the server config overrides or disables it.
  */
 export async function connectToServer(
 	name: string,
@@ -139,7 +137,7 @@ export async function connectToServer(
 		onRequest?: (method: string, params: unknown) => Promise<unknown>;
 	},
 ): Promise<MCPServerConnection> {
-	const timeoutMs = config.timeout ?? CONNECTION_TIMEOUT_MS;
+	const timeoutMs = resolveMcpTimeoutMs(config.timeout);
 	let transport: MCPTransport | undefined;
 
 	const connect = async (): Promise<MCPServerConnection> => {
@@ -180,6 +178,9 @@ export async function connectToServer(
 	};
 
 	try {
+		if (timeoutMs === undefined) {
+			return await connect();
+		}
 		return await withTimeout(
 			connect(),
 			timeoutMs,

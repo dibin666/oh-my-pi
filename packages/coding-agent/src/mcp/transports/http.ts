@@ -5,17 +5,18 @@
  * Based on MCP spec 2025-03-26.
  */
 import { logger, readSseJson, Snowflake } from "@oh-my-pi/pi-utils";
-import type {
-	JsonRpcError,
-	JsonRpcMessage,
-	JsonRpcRequest,
-	JsonRpcResponse,
-	MCPHttpServerConfig,
-	MCPRequestOptions,
-	MCPSseServerConfig,
-	MCPTransport,
+import {
+	type JsonRpcError,
+	type JsonRpcMessage,
+	type JsonRpcRequest,
+	type JsonRpcResponse,
+	type MCPHttpServerConfig,
+	type MCPRequestOptions,
+	type MCPSseServerConfig,
+	type MCPTransport,
+	resolveMcpTimeoutMs,
+	toJsonRpcError,
 } from "../../mcp/types";
-import { toJsonRpcError } from "../../mcp/types";
 
 /**
  * HTTP transport for MCP servers.
@@ -181,13 +182,14 @@ export class HttpTransport implements MCPTransport {
 		}
 
 		// Create AbortController for timeout
-		const timeout = this.config.timeout ?? 30000;
-		const abortController = new AbortController();
-		const timeoutId = setTimeout(() => abortController.abort(), timeout);
-		const operationSignal = options?.signal
-			? AbortSignal.any([options.signal, abortController.signal])
-			: abortController.signal;
-
+		const timeoutMs = resolveMcpTimeoutMs(this.config.timeout);
+		const abortController = timeoutMs === undefined ? undefined : new AbortController();
+		const timeoutId = timeoutMs === undefined ? undefined : setTimeout(() => abortController?.abort(), timeoutMs);
+		const operationSignal = abortController
+			? options?.signal
+				? AbortSignal.any([options.signal, abortController.signal])
+				: abortController.signal
+			: options?.signal;
 		try {
 			const response = await fetch(this.config.url, {
 				method: "POST",
@@ -196,7 +198,7 @@ export class HttpTransport implements MCPTransport {
 				signal: operationSignal,
 			});
 
-			clearTimeout(timeoutId);
+			if (timeoutId) clearTimeout(timeoutId);
 
 			// Check for session ID in response
 			const newSessionId = response.headers.get("Mcp-Session-Id");
@@ -234,12 +236,12 @@ export class HttpTransport implements MCPTransport {
 
 			return result.result as T;
 		} catch (error) {
-			clearTimeout(timeoutId);
+			if (timeoutId) clearTimeout(timeoutId);
 			if (error instanceof Error && error.name === "AbortError") {
-				if (options?.signal?.aborted) {
+				if (options?.signal?.aborted || timeoutMs === undefined) {
 					throw error;
 				}
-				throw new Error(`Request timeout after ${timeout}ms`);
+				throw new Error(`Request timeout after ${timeoutMs}ms`);
 			}
 			throw error;
 		}
@@ -254,13 +256,14 @@ export class HttpTransport implements MCPTransport {
 			throw new Error("No response body");
 		}
 
-		const timeout = this.config.timeout ?? 30000;
-		const abortController = new AbortController();
-		const timeoutId = setTimeout(() => abortController.abort(), timeout);
-		const operationSignal = options?.signal
-			? AbortSignal.any([options.signal, abortController.signal])
-			: abortController.signal;
-
+		const timeoutMs = resolveMcpTimeoutMs(this.config.timeout);
+		const abortController = timeoutMs === undefined ? undefined : new AbortController();
+		const timeoutId = timeoutMs === undefined ? undefined : setTimeout(() => abortController?.abort(), timeoutMs);
+		const operationSignal = abortController
+			? options?.signal
+				? AbortSignal.any([options.signal, abortController.signal])
+				: abortController.signal
+			: options?.signal;
 		try {
 			let result: T | undefined;
 			let captured = false;
@@ -274,7 +277,7 @@ export class HttpTransport implements MCPTransport {
 						message.id === expectedId &&
 						("result" in message || "error" in message)
 					) {
-						clearTimeout(timeoutId);
+						if (timeoutId) clearTimeout(timeoutId);
 						if (message.error) {
 							throw new Error(`MCP error ${message.error.code}: ${message.error.message}`);
 						}
@@ -295,20 +298,20 @@ export class HttpTransport implements MCPTransport {
 			return result as T;
 		} catch (error) {
 			if (error instanceof Error && error.name === "AbortError") {
-				if (options?.signal?.aborted) {
+				if (options?.signal?.aborted || timeoutMs === undefined) {
 					throw error;
 				}
-				throw new Error(`SSE response timeout after ${timeout}ms`);
+				throw new Error(`SSE response timeout after ${timeoutMs}ms`);
 			}
 			throw error;
 		} finally {
-			clearTimeout(timeoutId);
+			if (timeoutId) clearTimeout(timeoutId);
 		}
 	}
 
 	/** Continue reading SSE messages in the background after the primary response is captured. */
-	#drainSSEBackground(body: ReadableStream<Uint8Array>, signal: AbortSignal): void {
-		void this.#readSSEStream(body, signal);
+	#drainSSEBackground(body: ReadableStream<Uint8Array>, signal?: AbortSignal): void {
+		void this.#readSSEStream(body, signal ?? new AbortController().signal);
 	}
 
 	async #handleServerRequest(request: JsonRpcRequest): Promise<void> {

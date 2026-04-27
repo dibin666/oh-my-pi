@@ -4,6 +4,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { type MCPServer, mcpCapability } from "@oh-my-pi/pi-coding-agent/capability/mcp";
 import { loadCapability } from "@oh-my-pi/pi-coding-agent/discovery";
+import { loadAllMCPConfigs } from "../../src/mcp/config";
+import { setMcpTimeoutOverride } from "../../src/mcp/timeout-overrides";
+import { loadAllExtensions } from "../../src/modes/components/extensions/state-manager";
 
 async function loadStandaloneMcpConfig(cwd: string): Promise<MCPServer[]> {
 	const result = await loadCapability<MCPServer>(mcpCapability.id, {
@@ -123,5 +126,106 @@ describe("standalone mcp.json oauth env expansion", () => {
 			callbackPath: "/oauth/callback",
 		});
 		expect(server?.auth).toBeUndefined();
+	});
+});
+
+describe("MCP timeout overrides", () => {
+	let tempDir = "";
+
+	beforeEach(async () => {
+		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-timeout-overrides-"));
+	});
+
+	afterEach(async () => {
+		await fs.rm(tempDir, { recursive: true, force: true });
+	});
+
+	test("loadAllMCPConfigs applies project timeout overrides per server", async () => {
+		const primaryServer = "mcp-timeout-primary-test";
+		const disabledServer = "mcp-timeout-disabled-test";
+		await fs.writeFile(
+			path.join(tempDir, "mcp.json"),
+			JSON.stringify({
+				mcpServers: {
+					[primaryServer]: { command: "claude-code-mcp", timeout: 45_000 },
+					[disabledServer]: { command: "github-mcp" },
+				},
+			}),
+		);
+
+		await setMcpTimeoutOverride({
+			scope: "project",
+			cwd: tempDir,
+			sourcePath: path.join(tempDir, "mcp.json"),
+			serverName: primaryServer,
+			timeoutMs: 120_000,
+		});
+		await setMcpTimeoutOverride({
+			scope: "project",
+			cwd: tempDir,
+			sourcePath: path.join(tempDir, "mcp.json"),
+			serverName: disabledServer,
+			timeoutMs: 0,
+		});
+
+		const result = await loadAllMCPConfigs(tempDir, { filterExa: false });
+		expect(result.configs[primaryServer]?.timeout).toBe(120_000);
+		expect(result.configs[disabledServer]?.timeout).toBe(0);
+	});
+
+	test("loadAllExtensions exposes overridden MCP timeout values in the extensions dashboard", async () => {
+		const serverName = "mcp-timeout-extension-test";
+		await fs.writeFile(
+			path.join(tempDir, "mcp.json"),
+			JSON.stringify({
+				mcpServers: {
+					[serverName]: { command: "claude-code-mcp" },
+				},
+			}),
+		);
+		await setMcpTimeoutOverride({
+			scope: "project",
+			cwd: tempDir,
+			sourcePath: path.join(tempDir, "mcp.json"),
+			serverName,
+			timeoutMs: 180_000,
+		});
+
+		const extensions = await loadAllExtensions(tempDir, []);
+		const mcpExtension = extensions.find(ext => ext.kind === "mcp" && ext.name === serverName);
+		const raw = mcpExtension?.raw as MCPServer | undefined;
+
+		expect(mcpExtension?.source.level).toBe("project");
+		expect(raw?.timeout).toBe(180_000);
+	});
+
+	test("clearing a timeout override falls back to the source config value", async () => {
+		const serverName = "mcp-timeout-clear-test";
+		await fs.writeFile(
+			path.join(tempDir, "mcp.json"),
+			JSON.stringify({
+				mcpServers: {
+					[serverName]: { command: "claude-code-mcp", timeout: 45_000 },
+				},
+			}),
+		);
+		const sourcePath = path.join(tempDir, "mcp.json");
+		await setMcpTimeoutOverride({
+			scope: "project",
+			cwd: tempDir,
+			sourcePath,
+			serverName,
+			timeoutMs: 120_000,
+		});
+		await setMcpTimeoutOverride({
+			scope: "project",
+			cwd: tempDir,
+			sourcePath,
+			serverName,
+			timeoutMs: undefined,
+		});
+
+		const result = await loadAllMCPConfigs(tempDir, { filterExa: false });
+		expect(result.configs[serverName]?.timeout).toBe(45_000);
 	});
 });

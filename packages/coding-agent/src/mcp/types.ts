@@ -61,7 +61,7 @@ export interface MCPAuthConfig {
 interface MCPServerConfigBase {
 	/** Whether this server is enabled (default: true) */
 	enabled?: boolean;
-	/** Connection timeout in milliseconds (default: 30000) */
+	/** Connection/request timeout in milliseconds (default: 30000; <= 0 disables when injected programmatically) */
 	timeout?: number;
 	/** Authentication configuration (optional) */
 	auth?: MCPAuthConfig;
@@ -99,6 +99,13 @@ export interface MCPSseServerConfig extends MCPServerConfigBase {
 }
 
 export type MCPServerConfig = MCPStdioServerConfig | MCPHttpServerConfig | MCPSseServerConfig;
+
+export const DEFAULT_MCP_TIMEOUT_MS = 30_000;
+
+export function resolveMcpTimeoutMs(timeoutMs: number | undefined): number | undefined {
+	const timeout = timeoutMs ?? DEFAULT_MCP_TIMEOUT_MS;
+	return Number.isFinite(timeout) && timeout > 0 ? timeout : undefined;
+}
 
 export const MCP_CONFIG_SCHEMA_URL =
 	"https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json";

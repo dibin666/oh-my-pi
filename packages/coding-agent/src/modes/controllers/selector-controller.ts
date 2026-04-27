@@ -176,7 +176,24 @@ export class SelectorController {
 	 * Replaces /status with a unified view of all providers and extensions.
 	 */
 	async showExtensionsDashboard(): Promise<void> {
-		const dashboard = await ExtensionDashboard.create(getProjectDir(), this.ctx.settings, this.ctx.ui.terminal.rows);
+		const dashboard = await ExtensionDashboard.create(getProjectDir(), this.ctx.settings, this.ctx.ui.terminal.rows, {
+			onMcpTimeoutUpdated: async () => {
+				if (!this.ctx.mcpManager) return;
+				const result = await this.ctx.mcpManager.reload({
+					enableProjectConfig: this.ctx.settings.get("mcp.enableProjectConfig") ?? true,
+					filterExa: true,
+					filterBrowser: this.ctx.settings.get("browser.enabled") ?? false,
+				});
+				await this.ctx.session.refreshMCPTools(this.ctx.mcpManager.getTools());
+				if (result.errors.size > 0) {
+					const failures = Array.from(result.errors.entries())
+						.slice(0, 3)
+						.map(([serverName, error]) => `${serverName}: ${error}`)
+						.join("; ");
+					this.ctx.showWarning(`Some MCP servers failed to reconnect: ${failures}`);
+				}
+			},
+		});
 		this.showSelector(done => {
 			dashboard.onClose = () => {
 				done();

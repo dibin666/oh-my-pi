@@ -21,19 +21,28 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
+import type { MCPServer } from "../../../capability/mcp";
 import { Settings } from "../../../config/settings";
+import { formatMcpTimeoutDisplay, setMcpTimeoutOverride } from "../../../mcp/timeout-overrides";
 import { DynamicBorder } from "../../../modes/components/dynamic-border";
 import { theme } from "../../../modes/theme/theme";
 import { matchesAppInterrupt } from "../../../modes/utils/keybinding-matchers";
+import { HookInputComponent } from "../hook-input";
 import { ExtensionList } from "./extension-list";
 import { InspectorPanel } from "./inspector-panel";
 import { applyFilter, createInitialState, filterByProvider, refreshState, toggleProvider } from "./state-manager";
-import type { DashboardState } from "./types";
+import type { DashboardState, Extension } from "./types";
+
+export interface ExtensionDashboardOptions {
+	onMcpTimeoutUpdated?: () => Promise<void>;
+}
 
 export class ExtensionDashboard extends Container {
 	#state!: DashboardState;
 	#mainList!: ExtensionList;
 	#inspector!: InspectorPanel;
+	#noticeLine: string | null = null;
+	#timeoutEditor: HookInputComponent | null = null;
 
 	onClose?: () => void;
 
@@ -41,6 +50,7 @@ export class ExtensionDashboard extends Container {
 		private readonly cwd: string,
 		private readonly settings: Settings | null,
 		private readonly terminalHeight: number,
+		private readonly options: ExtensionDashboardOptions = {},
 	) {
 		super();
 	}
@@ -49,8 +59,9 @@ export class ExtensionDashboard extends Container {
 		cwd: string,
 		settings: Settings | null = null,
 		terminalHeight?: number,
+		options: ExtensionDashboardOptions = {},
 	): Promise<ExtensionDashboard> {
-		const dashboard = new ExtensionDashboard(cwd, settings, terminalHeight ?? process.stdout.rows ?? 24);
+		const dashboard = new ExtensionDashboard(cwd, settings, terminalHeight ?? process.stdout.rows ?? 24, options);
 		await dashboard.#init();
 		return dashboard;
 	}
@@ -100,6 +111,10 @@ export class ExtensionDashboard extends Container {
 
 	#buildLayout(): void {
 		this.clear();
+		if (this.#timeoutEditor) {
+			this.addChild(this.#timeoutEditor);
+			return;
+		}
 
 		// Top border
 		this.addChild(new DynamicBorder());
@@ -117,7 +132,14 @@ export class ExtensionDashboard extends Container {
 		this.addChild(new TwoColumnBody(this.#mainList, this.#inspector, bodyMaxHeight));
 
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", " ↑/↓: navigate  Space: toggle  Tab: next provider  Esc: close"), 0, 0));
+		let helpText = " ↑/↓: navigate  Space: toggle  Tab: next provider  Esc: close";
+		if (this.#getSelectedEditableMcpExtension()) {
+			helpText += "  Ctrl+T: edit MCP timeout";
+		}
+		this.addChild(new Text(theme.fg("dim", helpText), 0, 0));
+		if (this.#noticeLine) {
+			this.addChild(new Text(this.#noticeLine, 0, 0));
+		}
 
 		// Bottom border
 		this.addChild(new DynamicBorder());
@@ -132,7 +154,6 @@ export class ExtensionDashboard extends Container {
 			const isEmpty = tab.count === 0 && tab.id !== "all";
 			const isDisabled = !tab.enabled && tab.id !== "all";
 
-			// Build label with count
 			let label = tab.label;
 			if (tab.count > 0) {
 				label += ` (${tab.count})`;
@@ -141,21 +162,96 @@ export class ExtensionDashboard extends Container {
 			const displayLabel = isDisabled ? `${theme.status.disabled} ${label}` : label;
 
 			if (isActive) {
-				// Active tab: background highlight
 				parts.push(theme.bg("selectedBg", ` ${displayLabel} `));
 			} else if (isDisabled) {
-				// Disabled provider: dim
 				parts.push(theme.fg("dim", ` ${displayLabel} `));
 			} else if (isEmpty) {
-				// Empty enabled provider: very dim, unselectable
 				parts.push(theme.fg("dim", ` ${label} `));
 			} else {
-				// Normal enabled provider
 				parts.push(theme.fg("muted", ` ${label} `));
 			}
 		}
 
 		return parts.join("");
+	}
+
+	#getSelectedEditableMcpExtension(): Extension | null {
+		const selected = this.#state.selected;
+		if (!selected || selected.kind !== "mcp") return null;
+		return selected.source.level === "user" || selected.source.level === "project" ? selected : null;
+	}
+
+	#closeTimeoutEditor(): void {
+		this.#timeoutEditor?.dispose();
+		this.#timeoutEditor = null;
+		this.#buildLayout();
+	}
+
+	#openTimeoutEditor(extension: Extension): void {
+		const mcp = extension.raw as MCPServer;
+		const title = [
+			`Set timeout for MCP server \`${extension.name}\``,
+			`Current: ${formatMcpTimeoutDisplay(mcp.timeout)}`,
+			"Enter milliseconds.",
+			"Use `0` to disable the timeout.",
+			"Leave empty to clear the override and fall back to the source config/default.",
+		].join("\n\n");
+		this.#timeoutEditor = new HookInputComponent(
+			title,
+			undefined,
+			value => {
+				void this.#submitTimeoutEdit(extension, value);
+			},
+			() => {
+				this.#closeTimeoutEditor();
+			},
+		);
+		this.#buildLayout();
+	}
+
+	async #submitTimeoutEdit(extension: Extension, value: string): Promise<void> {
+		const trimmed = value.trim();
+		const scope = extension.source.level;
+		if (scope !== "user" && scope !== "project") {
+			this.#noticeLine = theme.fg("warning", "This MCP source cannot store timeout overrides.");
+			this.#closeTimeoutEditor();
+			return;
+		}
+
+		let timeoutMs: number | undefined;
+		if (trimmed) {
+			const parsed = Number(trimmed);
+			if (!Number.isInteger(parsed) || parsed < 0) {
+				this.#noticeLine = theme.fg("warning", "Invalid MCP timeout. Use an integer >= 0.");
+				this.#closeTimeoutEditor();
+				return;
+			}
+			timeoutMs = parsed;
+		}
+
+		try {
+			await setMcpTimeoutOverride({
+				scope,
+				cwd: this.cwd,
+				sourcePath: extension.path,
+				serverName: extension.name,
+				timeoutMs,
+			});
+			await this.options.onMcpTimeoutUpdated?.();
+			this.#noticeLine = theme.fg(
+				"success",
+				timeoutMs === undefined
+					? `Cleared MCP timeout override for ${extension.name}.`
+					: `Set MCP timeout for ${extension.name} to ${formatMcpTimeoutDisplay(timeoutMs)}.`,
+			);
+		} catch (error) {
+			this.#noticeLine = theme.fg(
+				"warning",
+				`Failed to update MCP timeout: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+		this.#closeTimeoutEditor();
+		await this.#refreshFromState();
 	}
 
 	#handleProviderToggle(providerId: string): void {
@@ -245,13 +341,16 @@ export class ExtensionDashboard extends Container {
 	}
 
 	handleInput(data: string): void {
-		// Ctrl+C - close immediately
+		if (this.#timeoutEditor) {
+			this.#timeoutEditor.handleInput(data);
+			return;
+		}
+
 		if (matchesKey(data, "ctrl+c")) {
 			this.onClose?.();
 			return;
 		}
 
-		// Escape - clear search first, then close
 		if (matchesAppInterrupt(data)) {
 			if (this.#state.searchQuery.length > 0) {
 				this.#state.searchQuery = "";
@@ -265,7 +364,6 @@ export class ExtensionDashboard extends Container {
 			return;
 		}
 
-		// Tab/Shift+Tab: Cycle through tabs
 		if (matchesKey(data, "tab")) {
 			this.#switchTab(1);
 			return;
@@ -275,10 +373,16 @@ export class ExtensionDashboard extends Container {
 			return;
 		}
 
-		// All other input goes to the list
+		if (matchesKey(data, "ctrl+t")) {
+			const selectedMcp = this.#getSelectedEditableMcpExtension();
+			if (selectedMcp) {
+				this.#openTimeoutEditor(selectedMcp);
+				return;
+			}
+		}
+
 		this.#mainList.handleInput(data);
 
-		// Sync search query back to state
 		const query = this.#mainList.getSearchQuery();
 		if (query !== this.#state.searchQuery) {
 			this.#state.searchQuery = query;

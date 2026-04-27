@@ -10,6 +10,7 @@ import type { SourceMeta } from "../capability/types";
 import type { MCPServer } from "../discovery";
 import { loadCapability } from "../discovery";
 import { readDisabledServers } from "./config-writer";
+import { applyMcpTimeoutOverrideToConfig, loadMcpTimeoutOverrides } from "./timeout-overrides";
 import type { MCPServerConfig } from "./types";
 
 /** Options for loading MCP configs */
@@ -107,11 +108,18 @@ export async function loadAllMCPConfigs(cwd: string, options?: LoadMCPConfigsOpt
 
 	// Load user-level disabled servers list
 	const disabledServers = new Set(await readDisabledServers(getMCPConfigPath("user", cwd)));
+	const timeoutOverrides = loadMcpTimeoutOverrides(cwd);
 	// Convert to legacy format and preserve source metadata
 	let configs: Record<string, MCPServerConfig> = {};
 	let sources: Record<string, SourceMeta> = {};
 	for (const server of servers) {
-		const config = convertToLegacyConfig(server);
+		const config = applyMcpTimeoutOverrideToConfig(
+			server.name,
+			convertToLegacyConfig(server),
+			server._source,
+			timeoutOverrides,
+			cwd,
+		);
 		if (config.enabled === false || disabledServers.has(server.name)) {
 			continue;
 		}

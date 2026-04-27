@@ -555,6 +555,16 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"retry.autoContinuePartialResponse": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "model",
+			label: "Resume Partial Responses",
+			description: "Continue from partial assistant output after a retryable transport disconnect",
+		},
+	},
+
 	"retry.baseDelayMs": { type: "number", default: 2000 },
 	"retry.fallbackChains": { type: "record", default: {} as Record<string, string[]> },
 	"retry.fallbackRevertPolicy": {
@@ -1936,6 +1946,7 @@ export interface ContextPromotionSettings {
 export interface RetrySettings {
 	enabled: boolean;
 	maxRetries: number;
+	autoContinuePartialResponse: boolean;
 	baseDelayMs: number;
 }
 

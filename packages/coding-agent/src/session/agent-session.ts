@@ -129,6 +129,7 @@ import planModeReferencePrompt from "../prompts/system/plan-mode-reference.md" w
 import planModeToolDecisionReminderPrompt from "../prompts/system/plan-mode-tool-decision-reminder.md" with {
 	type: "text",
 };
+import retryContinuePrompt from "../prompts/system/retry-continue.md" with { type: "text" };
 import ttsrInterruptTemplate from "../prompts/system/ttsr-interrupt.md" with { type: "text" };
 import { deobfuscateSessionContext, type SecretObfuscator } from "../secrets/obfuscator";
 import { resolveThinkingLevelForModel, toReasoningEffort } from "../thinking";
@@ -1202,16 +1203,16 @@ export class AgentSession {
 		);
 	}
 
-	#scheduleAutoContinuePrompt(generation: number): void {
-		const continuePrompt = async () => {
+	#scheduleDeveloperFollowUpPrompt(promptText: string, generation: number): void {
+		const followUpPrompt = async () => {
 			await this.#promptWithMessage(
 				{
 					role: "developer",
-					content: [{ type: "text", text: "Continue if you have next steps." }],
+					content: [{ type: "text", text: promptText }],
 					attribution: "agent",
 					timestamp: Date.now(),
 				},
-				"Continue if you have next steps.",
+				promptText,
 				{ skipPostPromptRecoveryWait: true },
 			);
 		};
@@ -1219,10 +1220,14 @@ export class AgentSession {
 			async signal => {
 				await Promise.resolve();
 				if (signal.aborted) return;
-				await continuePrompt();
+				await followUpPrompt();
 			},
 			{ generation },
 		);
+	}
+
+	#scheduleAutoContinuePrompt(generation: number): void {
+		this.#scheduleDeveloperFollowUpPrompt(retryContinuePrompt.trim(), generation);
 	}
 
 	#cancelPostPromptTasks(): void {
@@ -5254,9 +5259,17 @@ export class AgentSession {
 	#isTransientTransportErrorMessage(errorMessage: string): boolean {
 		// Match: overloaded_error, provider returned error, rate limit, 429, 500, 502, 503, 504,
 		// service unavailable, network/connection errors, fetch failed, terminated, retry delay exceeded
-		return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|timed? out|timeout|terminated|retry delay|stream stall/i.test(
+		return /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|other side closed|fetch failed|upstream.?connect|upstream.?connection.*closed|unexpectedly closed|partial response.*(?:already )?(?:delivered|transferred|transmitted)|reset before headers|socket hang up|timed? out|timeout|terminated|retry delay|stream stall/i.test(
 			errorMessage,
 		);
+	}
+
+	#canRetryFromPartialAssistantMessage(message: AssistantMessage): boolean {
+		if (!this.settings.get("retry.autoContinuePartialResponse")) return false;
+		if (!message.errorMessage) return false;
+		if (!this.#isTransientTransportErrorMessage(message.errorMessage)) return false;
+		if (message.content.some(content => content.type === "toolCall")) return false;
+		return message.content.some(content => content.type === "text" && content.text.trim().length > 0);
 	}
 
 	#getRetryFallbackChains(): RetryFallbackChains {
@@ -5592,10 +5605,13 @@ export class AgentSession {
 			errorMessage,
 		});
 
-		// Remove error message from agent state (keep in session for history)
-		const messages = this.agent.state.messages;
-		if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
-			this.agent.replaceMessages(messages.slice(0, -1));
+		const retryWithContinuationPrompt = this.#canRetryFromPartialAssistantMessage(message);
+		if (!retryWithContinuationPrompt) {
+			// Remove error message from agent state (keep in session for history)
+			const messages = this.agent.state.messages;
+			if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
+				this.agent.replaceMessages(messages.slice(0, -1));
+			}
 		}
 
 		// Wait with exponential backoff (abortable)
@@ -5622,8 +5638,12 @@ export class AgentSession {
 		}
 		this.#retryAbortController = undefined;
 
-		// Retry via continue() outside the agent_end event callback chain.
-		this.#scheduleAgentContinue({ delayMs: 1, generation });
+		if (retryWithContinuationPrompt) {
+			this.#scheduleAutoContinuePrompt(generation);
+		} else {
+			// Retry via continue() outside the agent_end event callback chain.
+			this.#scheduleAgentContinue({ delayMs: 1, generation });
+		}
 
 		return true;
 	}

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `retry.autoContinuePartialResponse` in settings so partial-response retry continuation can be toggled from the Model settings menu
+
+### Fixed
+
+- Fixed retryable upstream transport disconnects after partial streamed output to automatically continue from the partial assistant response instead of requiring a manual follow-up prompt
+
 ## [14.5.3] - 2026-04-27
 
 ### Added

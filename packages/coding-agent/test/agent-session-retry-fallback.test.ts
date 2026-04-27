@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
-import { type AssistantMessage, Effort, getBundledModel, type Model } from "@oh-my-pi/pi-ai";
+import { type AssistantMessage, type Context, Effort, getBundledModel, type Model } from "@oh-my-pi/pi-ai";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -9,6 +9,8 @@ import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import retryContinuePrompt from "../src/prompts/system/retry-continue.md" with { type: "text" };
+import { convertToLlm } from "../src/session/messages";
 
 class MockAssistantStream extends AssistantMessageEventStream {}
 
@@ -131,6 +133,101 @@ describe("AgentSession retry fallback", () => {
 		authStorage.close();
 		tempDir.removeSync();
 	});
+
+	async function runPartialResponseRetryScenario(options?: {
+		autoContinuePartialResponse?: boolean;
+		successText?: string;
+	}): Promise<{
+		attemptCount: number;
+		capturedContexts: Context["messages"][];
+		retryStartEvents: AutoRetryStartEvent[];
+		retryEndEvents: AutoRetryEndEvent[];
+		retryableError: string;
+		partialText: string;
+		lastAssistant: AssistantMessage;
+	}> {
+		const model = getBundledModel("openai", "gpt-4o-mini");
+		if (!model) {
+			throw new Error("Expected bundled OpenAI test model to exist");
+		}
+
+		const retryableError = "Upstream connection unexpectedly closed, partial response already transferred";
+		const partialText = "Partial answer that should be continued";
+		const successText = options?.successText ?? "Finished after automatic continuation";
+		const capturedContexts: Context["messages"][] = [];
+		let attemptCount = 0;
+
+		const agent = new Agent({
+			convertToLlm,
+			getApiKey: provider => `${provider}-test-key`,
+			initialState: {
+				model,
+				systemPrompt: "Test",
+				tools: [],
+				messages: [],
+			},
+			streamFn: (requestedModel, context: Context) => {
+				capturedContexts.push(structuredClone(context.messages));
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					attemptCount += 1;
+					if (attemptCount === 1) {
+						const message = createAssistantMessage(requestedModel, {
+							text: partialText,
+							stopReason: "error",
+							errorMessage: retryableError,
+						});
+						stream.push({ type: "start", partial: message });
+						stream.push({ type: "error", reason: "error", error: message });
+						return;
+					}
+					if (attemptCount === 2) {
+						const message = createAssistantMessage(requestedModel, {
+							text: successText,
+							stopReason: "stop",
+						});
+						stream.push({
+							type: "start",
+							partial: createAssistantMessage(requestedModel, { text: "", stopReason: "stop" }),
+						});
+						stream.push({ type: "done", reason: "stop", message });
+						return;
+					}
+					throw new Error(`Unexpected retry attempt in partial-response retry test: ${attemptCount}`);
+				});
+				return stream;
+			},
+		});
+
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.maxRetries": 1,
+			...(options?.autoContinuePartialResponse === false ? { "retry.autoContinuePartialResponse": false } : {}),
+		});
+		settings.setModelRole("default", `${model.provider}/${model.id}`);
+
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+		const { retryStartEvents, retryEndEvents } = trackRetryEvents(session);
+
+		await session.prompt("Recover automatically after upstream close");
+		await session.waitForIdle();
+
+		return {
+			attemptCount,
+			capturedContexts,
+			retryStartEvents,
+			retryEndEvents,
+			retryableError,
+			partialText,
+			lastAssistant: getLastAssistantMessage(session),
+		};
+	}
 
 	it("advances through a role-keyed fallback chain across retries", async () => {
 		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
@@ -346,6 +443,75 @@ describe("AgentSession retry fallback", () => {
 		expect(lastAssistant.content).toContainEqual({ type: "text", text: "Recovered after OpenAI timeout" });
 	});
 
+	it("continues from partial assistant text when a retryable upstream close interrupts the stream", async () => {
+		const {
+			attemptCount,
+			capturedContexts,
+			retryStartEvents,
+			retryEndEvents,
+			retryableError,
+			partialText,
+			lastAssistant,
+		} = await runPartialResponseRetryScenario();
+
+		expect(attemptCount).toBe(2);
+		expect(capturedContexts).toHaveLength(2);
+		expect(retryStartEvents).toHaveLength(1);
+		expect(retryStartEvents[0]).toMatchObject({
+			attempt: 1,
+			maxAttempts: 1,
+			errorMessage: retryableError,
+		});
+		expect(retryEndEvents).toHaveLength(1);
+		expect(retryEndEvents[0]).toMatchObject({ success: true, attempt: 1 });
+
+		const retryContext = capturedContexts[1];
+		expect(retryContext.filter(message => message.role === "user")).toHaveLength(1);
+		const partialAssistant = retryContext.find(
+			(message): message is AssistantMessage => message.role === "assistant",
+		);
+		expect(partialAssistant?.content).toContainEqual({ type: "text", text: partialText });
+		const continuationPrompt = retryContext.at(-1);
+		expect(continuationPrompt?.role).toBe("developer");
+		const continuationPromptText = Array.isArray(continuationPrompt?.content)
+			? continuationPrompt.content.find(content => content.type === "text")?.text
+			: undefined;
+		expect(continuationPromptText).toBe(retryContinuePrompt.trim());
+
+		expect(lastAssistant.stopReason).toBe("stop");
+		expect(lastAssistant.content).toContainEqual({
+			type: "text",
+			text: "Finished after automatic continuation",
+		});
+	});
+
+	it("can disable partial-response continuation retries from settings", async () => {
+		const successText = "Finished after standard retry";
+		const { attemptCount, capturedContexts, retryStartEvents, retryEndEvents, retryableError, lastAssistant } =
+			await runPartialResponseRetryScenario({
+				autoContinuePartialResponse: false,
+				successText,
+			});
+
+		expect(attemptCount).toBe(2);
+		expect(capturedContexts).toHaveLength(2);
+		expect(retryStartEvents).toHaveLength(1);
+		expect(retryStartEvents[0]).toMatchObject({
+			attempt: 1,
+			maxAttempts: 1,
+			errorMessage: retryableError,
+		});
+		expect(retryEndEvents).toHaveLength(1);
+		expect(retryEndEvents[0]).toMatchObject({ success: true, attempt: 1 });
+
+		const retryContext = capturedContexts[1];
+		expect(retryContext.filter(message => message.role === "user")).toHaveLength(1);
+		expect(retryContext.some(message => message.role === "assistant")).toBe(false);
+		expect(retryContext.some(message => message.role === "developer")).toBe(false);
+
+		expect(lastAssistant.stopReason).toBe("stop");
+		expect(lastAssistant.content).toContainEqual({ type: "text", text: successText });
+	});
 	it("auto-retries Anthropic stream-envelope failures before message_start", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) {

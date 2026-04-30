@@ -93,6 +93,13 @@ describe("ModelRegistry", () => {
 		return registry.getAll().filter(m => m.provider === provider);
 	}
 
+	function getOpenAICompat(model: Model | undefined): OpenAICompat | undefined {
+		// All custom-model compat overrides flow through OpenAICompatSchema regardless of
+		// the underlying api ("openai-completions" vs "openai-responses"), so we can read
+		// the field for any model in this fixture.
+		return model?.compat as OpenAICompat | undefined;
+	}
+
 	/** Create a baseUrl-only override (no custom models) */
 	function overrideConfig(baseUrl: string, headers?: Record<string, string>) {
 		return { baseUrl, ...(headers && { headers }) };
@@ -511,8 +518,8 @@ describe("ModelRegistry", () => {
 			const models = getModelsForProvider(registry, "openrouter");
 			expect(models.length).toBeGreaterThan(0);
 			for (const model of models) {
-				expect(model.compat?.supportsUsageInStreaming).toBe(false);
-				expect(model.compat?.supportsStrictMode).toBe(false);
+				expect(getOpenAICompat(model)?.supportsUsageInStreaming).toBe(false);
+				expect(getOpenAICompat(model)?.supportsStrictMode).toBe(false);
 			}
 		});
 
@@ -541,8 +548,9 @@ describe("ModelRegistry", () => {
 
 			const registry = new ModelRegistry(authStorage, modelsJsonPath);
 			const model = registry.find("demo", "demo-model");
-			expect(model?.compat?.supportsUsageInStreaming).toBe(false);
-			expect(model?.compat?.maxTokensField).toBe("max_tokens");
+			const compat = getOpenAICompat(model);
+			expect(compat?.supportsUsageInStreaming).toBe(false);
+			expect(compat?.maxTokensField).toBe("max_tokens");
 		});
 
 		test("model-level compat overrides provider-level compat for custom models", () => {
@@ -574,8 +582,9 @@ describe("ModelRegistry", () => {
 
 			const registry = new ModelRegistry(authStorage, modelsJsonPath);
 			const model = registry.find("demo", "demo-model");
-			expect(model?.compat?.supportsUsageInStreaming).toBe(true);
-			expect(model?.compat?.maxTokensField).toBe("max_completion_tokens");
+			const compat = getOpenAICompat(model);
+			expect(compat?.supportsUsageInStreaming).toBe(true);
+			expect(compat?.maxTokensField).toBe("max_completion_tokens");
 		});
 	});
 
@@ -883,12 +892,12 @@ describe("ModelRegistry", () => {
 				},
 			});
 			const registry = new ModelRegistry(authStorage, modelsJsonPath);
-			expect(registry.find("openai", "gpt-5.4")?.compat?.extraBody).toEqual({ source: "proxy" });
+			expect(getOpenAICompat(registry.find("openai", "gpt-5.4"))?.extraBody).toEqual({ source: "proxy" });
 
 			using _hook = mockOpenAiCompatibleModels("https://my-proxy.example.com/v1/models", ["gpt-5.4"]);
 			await registry.refreshProvider("openai", "online");
 
-			expect(registry.find("openai", "gpt-5.4")?.compat?.extraBody).toEqual({ source: "proxy" });
+			expect(getOpenAICompat(registry.find("openai", "gpt-5.4"))?.extraBody).toEqual({ source: "proxy" });
 		});
 
 		test("modelOverrides still apply after discoverable refresh", async () => {
@@ -962,9 +971,10 @@ describe("ModelRegistry", () => {
 
 			const registry = new ModelRegistry(authStorage, modelsJsonPath);
 			const model = registry.find("minimax-code", "MiniMax-M2.5");
-			expect(model?.compat?.thinkingFormat).toBeUndefined();
-			expect(model?.compat?.reasoningContentField).toBeUndefined();
-			expect(model?.compat?.extraBody).toEqual({ source: "proxy" });
+			const compat = getOpenAICompat(model);
+			expect(compat?.thinkingFormat).toBeUndefined();
+			expect(compat?.reasoningContentField).toBeUndefined();
+			expect(compat?.extraBody).toEqual({ source: "proxy" });
 		});
 
 		test("removing custom models from models.json keeps built-in provider models", async () => {
@@ -1869,6 +1879,126 @@ describe("ModelRegistry", () => {
 			expect(
 				registry.getAvailable().some(model => model.provider === "anthropic" && model.id === "claude-opus-4-7"),
 			).toBe(true);
+		});
+	});
+
+	describe("provider auth: oauth", () => {
+		test("models from a provider with auth: oauth are marked isOAuth=true", async () => {
+			writeRawModelsJson({
+				"p-anthropic": {
+					baseUrl: "https://proxy.example.com",
+					apiKey: "literal-key",
+					api: "anthropic-messages",
+					auth: "oauth",
+					models: [
+						{
+							id: "claude-sonnet-4-5",
+							name: "Claude Sonnet 4.5",
+							reasoning: true,
+							input: ["text"],
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 200000,
+							maxTokens: 8000,
+						},
+					],
+				},
+			});
+			await authStorage.setRuntimeApiKey("p-anthropic", "literal-key");
+
+			const registry = new ModelRegistry(authStorage, modelsJsonPath);
+			await registry.refresh("offline");
+
+			const model = registry.find("p-anthropic", "claude-sonnet-4-5");
+			expect(model).toBeDefined();
+			expect(model?.isOAuth).toBe(true);
+		});
+
+		test("anthropic-messages providers default to isOAuth=true even without explicit auth", async () => {
+			writeRawModelsJson({
+				"p-anthropic": {
+					baseUrl: "https://proxy.example.com",
+					apiKey: "literal-key",
+					api: "anthropic-messages",
+					models: [
+						{
+							id: "claude-sonnet-4-5",
+							name: "Claude Sonnet 4.5",
+							reasoning: true,
+							input: ["text"],
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 200000,
+							maxTokens: 8000,
+						},
+					],
+				},
+			});
+			await authStorage.setRuntimeApiKey("p-anthropic", "literal-key");
+
+			const registry = new ModelRegistry(authStorage, modelsJsonPath);
+			await registry.refresh("offline");
+
+			const model = registry.find("p-anthropic", "claude-sonnet-4-5");
+			expect(model).toBeDefined();
+			expect(model?.isOAuth).toBe(true);
+		});
+
+		test("auth: apiKey opts out of the anthropic-messages default", async () => {
+			writeRawModelsJson({
+				"p-anthropic": {
+					baseUrl: "https://proxy.example.com",
+					apiKey: "literal-key",
+					api: "anthropic-messages",
+					auth: "apiKey",
+					models: [
+						{
+							id: "claude-sonnet-4-5",
+							name: "Claude Sonnet 4.5",
+							reasoning: true,
+							input: ["text"],
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 200000,
+							maxTokens: 8000,
+						},
+					],
+				},
+			});
+			await authStorage.setRuntimeApiKey("p-anthropic", "literal-key");
+
+			const registry = new ModelRegistry(authStorage, modelsJsonPath);
+			await registry.refresh("offline");
+
+			const model = registry.find("p-anthropic", "claude-sonnet-4-5");
+			expect(model).toBeDefined();
+			expect(model?.isOAuth).toBeUndefined();
+		});
+
+		test("non-anthropic apis do not get the OAuth default", async () => {
+			writeRawModelsJson({
+				"p-openai": {
+					baseUrl: "https://proxy.example.com/v1",
+					apiKey: "literal-key",
+					api: "openai-completions",
+					models: [
+						{
+							id: "gpt-5",
+							name: "GPT-5",
+							reasoning: true,
+							input: ["text"],
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 200000,
+							maxTokens: 8000,
+						},
+					],
+				},
+			});
+			await authStorage.setRuntimeApiKey("p-openai", "literal-key");
+
+			const registry = new ModelRegistry(authStorage, modelsJsonPath);
+			await registry.refresh("offline");
+
+			const model = registry.find("p-openai", "gpt-5");
+			expect(model).toBeDefined();
+			expect(model?.isOAuth).toBeUndefined();
 		});
 	});
 });

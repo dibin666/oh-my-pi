@@ -122,6 +122,15 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<BuiltinSlashCommandSpec> = [
 		},
 	},
 	{
+		name: "loop",
+		description:
+			"Toggle loop mode. While enabled, the next prompt you send re-submits after every yield. Esc cancels the current iteration; /loop again to disable.",
+		handle: async (_command, runtime) => {
+			await runtime.ctx.handleLoopCommand();
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
 		name: "model",
 		aliases: ["models"],
 		description: "Select model (opens selector UI)",
@@ -343,6 +352,14 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<BuiltinSlashCommandSpec> = [
 		description: "Show tools currently visible to the agent",
 		handle: (_command, runtime) => {
 			runtime.ctx.handleToolsCommand();
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
+		name: "context",
+		description: "Show estimated context usage breakdown",
+		handle: (_command, runtime) => {
+			runtime.ctx.handleContextCommand();
 			runtime.ctx.editor.setText("");
 		},
 	},

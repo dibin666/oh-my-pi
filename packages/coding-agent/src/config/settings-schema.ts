@@ -59,7 +59,7 @@ export const TAB_METADATA: Record<SettingTab, { label: string; icon: `tab.${stri
 export type StatusLineSegmentId =
 	| "pi"
 	| "model"
-	| "plan_mode"
+	| "mode"
 	| "path"
 	| "git"
 	| "pr"
@@ -615,6 +615,18 @@ export const SETTINGS_SCHEMA = {
 			tab: "interaction",
 			label: "Interrupt Mode",
 			description: "When steering messages interrupt tool execution",
+		},
+	},
+
+	"loop.mode": {
+		type: "enum",
+		values: ["prompt", "compact", "reset"] as const,
+		default: "prompt",
+		ui: {
+			tab: "interaction",
+			label: "Loop Mode",
+			description: "What happens between /loop iterations before re-submitting the prompt",
+			submenu: true,
 		},
 	},
 
@@ -1304,6 +1316,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"recipe.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			label: "Recipe",
+			description:
+				"Enable the recipe tool when a justfile / package.json / Cargo.toml / Makefile / Taskfile is present",
+		},
+	},
+
 	"inspect_image.enabled": {
 		type: "boolean",
 		default: false,
@@ -1780,38 +1803,33 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "providers",
 			label: "SearXNG Endpoint",
-			description: "Base URL of the SearXNG instance (e.g. https://searx.example.org)",
+			description: "Self-hosted search base URL",
 		},
 	},
 
 	"searxng.token": {
 		type: "string",
 		default: undefined,
-		ui: {
-			tab: "providers",
-			label: "SearXNG Token",
-			description: "Optional bearer token for SearXNG authentication",
-		},
+	},
+
+	"searxng.basicUsername": {
+		type: "string",
+		default: undefined,
+	},
+
+	"searxng.basicPassword": {
+		type: "string",
+		default: undefined,
 	},
 
 	"searxng.categories": {
 		type: "string",
 		default: undefined,
-		ui: {
-			tab: "providers",
-			label: "SearXNG Categories",
-			description: "Comma-separated categories filter (e.g. general,news,science)",
-		},
 	},
 
 	"searxng.language": {
 		type: "string",
 		default: undefined,
-		ui: {
-			tab: "providers",
-			label: "SearXNG Language",
-			description: "Language code for search results (e.g. en, zh-CN)",
-		},
 	},
 
 	"commit.mapReduceEnabled": { type: "boolean", default: true },

@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [14.5.10] - 2026-04-30
+
+### Added
+
+- Added provider response metadata callbacks for Anthropic and OpenAI streaming requests.
+
+## [14.5.9] - 2026-04-30
+### Added
+
+- Added `usage.reasoningTokens` to OpenAI and Google usage output when providers report reasoning/thinking tokens
+- Added `usage.cttl.ephemeral5m` and `usage.cttl.ephemeral1h` to report Anthropic cache-write TTL token buckets
+- Added `usage.server.webSearch` and `usage.server.webFetch` to report Anthropic server tool-call request counts
+
+### Fixed
+
+- Fixed OpenAI usage attribution to avoid double-counting `reasoning_tokens` in output totals
+- Fixed Anthropic streaming usage handling so a previously populated cache TTL breakdown is preserved when later events omit `cache_creation`
+
 ## [14.5.4] - 2026-04-28
 ### Changed
 

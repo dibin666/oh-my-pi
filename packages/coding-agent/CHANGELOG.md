@@ -11,6 +11,108 @@
 
 - Fixed retryable upstream transport disconnects after partial streamed output to automatically continue from the partial assistant response instead of requiring a manual follow-up prompt
 
+## [14.5.11] - 2026-04-30
+### Breaking Changes
+
+- `todo_write`: renamed `replace` op to `init` and reshaped its input to `list: [{phase: string, items: string[]}]`. Tasks no longer accept a `status` field; all start `pending` and the first auto-promotes to `in_progress`. The `append` op's `items` is now `string[]` (was `{id, label}[]`)
+- `todo_write`: removed the synthetic `task-N` / `phase-N` ids — task identity is now its `content` and phase identity is its `name`. The `task` field on `start`/`done`/`drop`/`note` and the `phase` field on `done`/`drop`/`rm`/`append` take those values directly
+- `todo_write`: phase names no longer accept a numeric/roman prefix (`I.`, `1.`, `Phase 1:`, …). The renderer numbers phases visually (Ⅰ. Ⅱ. Ⅲ. …) and the model-facing state stores the bare noun phrase
+
+### Changed
+
+- Changed `/todo` task and phase operations to target items by fuzzy content or phase name matching instead of numeric IDs
+- Changed initial todo markdown export template heading from `# I. Todos` to `# Todos`
+
+### Fixed
+
+- Fixed todo auto-clear scheduling to identify completed tasks by phase and content so only the matching task is cleared after delays
+
+## [14.5.10] - 2026-04-30
+
+### Breaking Changes
+
+- Removed the `worktree` parameter from `github` `pr_checkout`. Worktrees are now always written to `~/.omp/wt/<encoded-primary-repo>/pr-<number>/`, derived from the primary repository path
+- Stopped reading the `branch` parameter for `github` `pr_checkout`. The local branch is now always `pr-<number>`; the `branch` schema field is still accepted by `pr_push`, `repo_view`, and `run_watch`
+
+### Added
+
+- Added `checkouts` summary entries to `pr_checkout` results, including each checkout's branch, worktree path, remote, and reuse status
+- Added combined summaries for `pr_view` and `pr_diff` when `pr` is an array, so multi-request responses now include all requested pull requests in one return
+- Added array support to the `pr` parameter on `github` `pr_view`, `pr_diff`, and `pr_checkout` so a single call can fetch, diff, or check out multiple pull requests in one batch
+- Added a per-repo serialization lock (`withRepoLock`) so concurrent `pr_checkout` calls against the same repository no longer race on git's internal `.git/config.lock`, commit-graph, and worktree lock files
+
+### Changed
+
+- Changed the diff preview shown after edits so changed lines are never collapsed: removed runs and the global preview budget no longer truncate, only unchanged context still collapses
+- Changed adjacent `-`/`+` pairs in edit previews to fold into a single `*<line><hash>|<new-content>` modification line so 1:1 line replacements stay compact
+- Changed `git.remote.add` to be idempotent when the remote already exists with the same URL (instead of failing with `remote ... already exists`), and to surface a clear error when the existing URL differs
+- Changed `pr_checkout` to run `gh pr view` calls in parallel for batch invocations while serializing the in-repo git mutations to keep the operation race-free
+- Changed `pr_checkout` to auto-derive the worktree location and local branch name (see Breaking Changes), removing the per-call overrides that previously let callers pin a worktree path or local branch
+
+### Removed
+
+- Removed the `./hooks` and `./hooks/*` package export entries
+- Removed the `Suspicious duplicate` warning emitted after edits — it produced too many false positives (e.g. legitimate adjacent `\t});\n\t});`); the auto-fix path that uses bracket balance to safely de-duplicate is unchanged
+
+### Fixed
+
+- Fixed bash interceptor rules to also check the original command before `cd` normalization, so leading `cd ... &&` wrappers no longer bypass interception
+- Fixed LSP client shutdown to properly await the language server's exit instead of fire-and-forget, preventing premature process termination on SIGINT and SIGTERM
+- Fixed concurrent bash commands being tracked independently so aborting one no longer silently drops tracking of others
+
+## [14.5.9] - 2026-04-30
+
+### Added
+
+- Added the `/context` slash command to display an estimated context-usage breakdown panel for the current session
+- Added `-LidA..LidB` syntax to delete inclusive line ranges in a single atom operation
+- Added `LidA..LidB=TEXT` range-replace syntax with `\TEXT` and `\` continuation lines for multi-line replacement blocks
+- Added shorthand cursor+insert operations in atom edits, including `^Lid` (insert before anchor), `^+TEXT`, `$+TEXT`, and `Lid+TEXT`/`@Lid+TEXT`
+- Added standalone file-op fallback so `!rm` and `!mv DEST` inputs can be normalized into sections when using split input parsing
+
+### Changed
+
+- Changed token counting to use tokenizer-based estimates instead of a character-per-4 heuristic for context and compaction calculations
+- Changed hashline anchor auto-rebase tolerance from ±2 lines to ±5 lines for stale Lid recovery
+- Changed atom input handling so `#`-prefixed lines are treated as comments and ignored
+- Changed execution when all edits are no-op `Lid=TEXT` replacements to return success with a no-change explanation instead of throwing
+
+### Fixed
+
+- Fixed malformed range and unified-diff-like atom syntax by rejecting reversed ranges, mismatched range endpoint hashes, and forms like `+Lid|TEXT`, `+Lid=TEXT`, and `-LidA..LidB|TEXT` with explicit actionable errors
+- Fixed hash mismatch errors to include likely-shifted anchor hints when a unique matching line is found elsewhere in the file
+
+## [14.5.8] - 2026-04-29
+### Breaking Changes
+
+- Changed the task runner toggle from `just.enabled` to `runCommand.enabled`, so existing configurations using `just.enabled` must be migrated
+- Removed the legacy `just` tool and replaced it with `run_command`
+- Renamed the built-in tool API from `just` to `run_command`, so clients requesting/handling the old tool name must update
+
+### Added
+
+- Added a new `run_command` tool that runs project tasks via a single `op` argument, auto-detecting and supporting recipes from justfiles, `package.json` scripts (including workspace packages), Cargo bin/example/test targets, Makefiles, and Taskfiles
+- Added support for explicit runner-qualified tasks via `run_command` with `runnerId:task` syntax in the prompt guidance
+
+### Changed
+
+- Changed automatic tool availability so requesting `bash` can now auto-include `run_command` when a supported task runner manifest is detected in the working directory
+- Changed task resolution to disambiguate identical task names across multiple runners and show runner-aware command execution errors
+
+### Fixed
+
+- Fixed editor draft being erased when a user message queued during streaming was eventually submitted; the queue/steer path now preserves any new prompt the user has typed since queuing, matching the existing optimistic-send protection.
+
+## [14.5.7] - 2026-04-29
+
+### Fixed
+
+- Fixed hook editors to recognize Ctrl+Enter when terminals include NumLock or keypad Enter metadata.
+## [14.5.6] - 2026-04-29
+### Changed
+
+- Removed the atom edit mode's multi-anchor auto-rebase rejection so stale-but-uniquely-rebasable block edits apply with warnings instead of failing.
+
 ## [14.5.5] - 2026-04-29
 ### Breaking Changes
 
@@ -38,6 +140,7 @@
 
 ### Added
 
+- Added the `after_provider_response` extension event for observing provider response status, headers, and request IDs.
 - Added internal URL support to the `search` tool, allowing `artifact://`-style paths that resolve to local files to be searched directly
 - Added IRC relay observation in the main agent UI so every IRC exchange between agents is rendered in the main transcript, even when the main agent is not a direct participant
 - Added stateful `href`/`hrefr` prompt helpers that can reuse anchors remembered from prior `hline` helper calls

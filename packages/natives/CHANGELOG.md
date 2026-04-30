@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [14.5.9] - 2026-04-30
+### Fixed
+
+- Fixed shell minimizer output so successful commands whose noise is fully stripped still return `OK` instead of an artifact-only result
+
+## [14.5.6] - 2026-04-29
+
+### Added
+
+- Added shell minimizer support for CMake, CTest, Ninja, GoogleTest binaries, and Bun/Bunx wrappers that run those tools
+
 ## [14.5.2] - 2026-04-26
 ### Changed
 

@@ -145,8 +145,16 @@ const OpenAICompatSchema = Type.Object({
 	maxTokensField: Type.Optional(Type.Union([Type.Literal("max_completion_tokens"), Type.Literal("max_tokens")])),
 	supportsUsageInStreaming: Type.Optional(Type.Boolean()),
 	requiresToolResultName: Type.Optional(Type.Boolean()),
+	requiresMistralToolIds: Type.Optional(Type.Boolean()),
 	requiresAssistantAfterToolResult: Type.Optional(Type.Boolean()),
 	requiresThinkingAsText: Type.Optional(Type.Boolean()),
+	reasoningContentField: Type.Optional(
+		Type.Union([Type.Literal("reasoning_content"), Type.Literal("reasoning"), Type.Literal("reasoning_text")]),
+	),
+	requiresReasoningContentForToolCalls: Type.Optional(Type.Boolean()),
+	requiresAssistantContentForToolCalls: Type.Optional(Type.Boolean()),
+	supportsToolChoice: Type.Optional(Type.Boolean()),
+	disableReasoningOnForcedToolChoice: Type.Optional(Type.Boolean()),
 	thinkingFormat: Type.Optional(
 		Type.Union([
 			Type.Literal("openai"),
@@ -183,6 +191,7 @@ const ModelThinkingSchema = Type.Object({
 	minLevel: EffortSchema,
 	maxLevel: EffortSchema,
 	mode: ThinkingControlModeSchema,
+	defaultLevel: Type.Optional(EffortSchema),
 });
 
 // Schema for custom model definition
@@ -249,7 +258,7 @@ const ProviderDiscoverySchema = Type.Object({
 	type: Type.Union([Type.Literal("ollama"), Type.Literal("llama.cpp"), Type.Literal("lm-studio")]),
 });
 
-const ProviderAuthSchema = Type.Union([Type.Literal("apiKey"), Type.Literal("none")]);
+const ProviderAuthSchema = Type.Union([Type.Literal("apiKey"), Type.Literal("none"), Type.Literal("oauth")]);
 
 const ProviderConfigSchema = Type.Object({
 	baseUrl: Type.Optional(Type.String({ minLength: 1 })),
@@ -558,27 +567,20 @@ function resolveOAuthAccountIdForAccessToken(
 	return undefined;
 }
 
-function mergeCompat(
-	baseCompat: Model<Api>["compat"],
-	overrideCompat: ModelOverride["compat"],
-): Model<Api>["compat"] | undefined {
+function mergeCompat<TBase extends object, TOverride extends object>(
+	baseCompat: TBase | null | undefined,
+	overrideCompat: TOverride | null | undefined,
+): (TBase & TOverride) | TBase | TOverride | undefined {
+	if (!baseCompat) return overrideCompat ?? undefined;
 	if (!overrideCompat) return baseCompat;
-	const base = baseCompat ?? {};
-	const override = overrideCompat;
-	const merged: NonNullable<Model<Api>["compat"]> = { ...base, ...override };
-	if (baseCompat?.reasoningEffortMap || overrideCompat.reasoningEffortMap) {
-		merged.reasoningEffortMap = { ...baseCompat?.reasoningEffortMap, ...overrideCompat.reasoningEffortMap };
+
+	const merged: Record<string, unknown> = { ...(baseCompat as Record<string, unknown>) };
+	for (const [key, overrideValue] of Object.entries(overrideCompat)) {
+		const baseValue = (baseCompat as Record<string, unknown>)[key];
+		merged[key] =
+			isRecord(baseValue) && isRecord(overrideValue) ? mergeCompat(baseValue, overrideValue) : overrideValue;
 	}
-	if (baseCompat?.openRouterRouting || overrideCompat.openRouterRouting) {
-		merged.openRouterRouting = { ...baseCompat?.openRouterRouting, ...overrideCompat.openRouterRouting };
-	}
-	if (baseCompat?.vercelGatewayRouting || overrideCompat.vercelGatewayRouting) {
-		merged.vercelGatewayRouting = { ...baseCompat?.vercelGatewayRouting, ...overrideCompat.vercelGatewayRouting };
-	}
-	if (baseCompat?.extraBody || overrideCompat.extraBody) {
-		merged.extraBody = { ...baseCompat?.extraBody, ...overrideCompat.extraBody };
-	}
-	return merged;
+	return merged as TBase & TOverride;
 }
 
 function applyModelOverride(model: Model<Api>, override: ModelOverride): Model<Api> {
@@ -643,6 +645,7 @@ type CustomModelOverlay = {
 	compat?: Model<Api>["compat"];
 	contextPromotionTarget?: string;
 	premiumMultiplier?: number;
+	isOAuth?: boolean;
 };
 
 function mergeCustomModelHeaders(
@@ -661,6 +664,22 @@ function mergeCustomModelHeaders(
 	return headers;
 }
 
+/**
+ * Decide whether a custom-yaml model should force OAuth-style request shaping.
+ * - Explicit `auth: oauth` → force on.
+ * - Explicit `auth: apiKey` / `auth: none` → leave unset (auto-detect by key prefix).
+ * - No `auth` specified and `api: anthropic-messages` → default on. Custom Anthropic
+ *   endpoints are typically Claude-Code-style proxies (e.g. CLIProxyAPI) that expect
+ *   the cloaked request shape regardless of how the proxy itself is authenticated.
+ * - Otherwise → unset.
+ */
+function resolveCustomModelIsOAuth(api: Api, providerAuth: ProviderAuthMode | undefined): boolean | undefined {
+	if (providerAuth === "oauth") return true;
+	if (providerAuth !== undefined) return undefined;
+	if (api === "anthropic-messages") return true;
+	return undefined;
+}
+
 function buildCustomModelOverlay(
 	providerName: string,
 	providerBaseUrl: string,
@@ -669,6 +688,7 @@ function buildCustomModelOverlay(
 	providerApiKey: string | undefined,
 	authHeader: boolean | undefined,
 	providerCompat: Model<Api>["compat"] | undefined,
+	providerAuth: ProviderAuthMode | undefined,
 	modelDef: CustomModelDefinitionLike,
 ): CustomModelOverlay | undefined {
 	const api = modelDef.api ?? providerApi;
@@ -689,6 +709,7 @@ function buildCustomModelOverlay(
 		compat: mergeCompat(providerCompat, modelDef.compat),
 		contextPromotionTarget: modelDef.contextPromotionTarget,
 		premiumMultiplier: modelDef.premiumMultiplier,
+		isOAuth: resolveCustomModelIsOAuth(api, providerAuth),
 	};
 }
 
@@ -720,6 +741,7 @@ function finalizeCustomModel(model: CustomModelOverlay, options: CustomModelBuil
 		compat: resolvedModel.compat,
 		contextPromotionTarget: resolvedModel.contextPromotionTarget,
 		premiumMultiplier: resolvedModel.premiumMultiplier,
+		isOAuth: resolvedModel.isOAuth,
 	} as Model<Api>);
 }
 
@@ -1735,6 +1757,7 @@ export class ModelRegistry {
 					providerConfig.apiKey,
 					providerConfig.authHeader,
 					providerConfig.compat,
+					(providerConfig.auth as ProviderAuthMode | undefined) ?? undefined,
 					modelDef as CustomModelDefinitionLike,
 				);
 				if (!model) continue;
@@ -2069,6 +2092,7 @@ export class ModelRegistry {
 					config.apiKey,
 					config.authHeader,
 					config.compat,
+					undefined,
 					modelDef as CustomModelDefinitionLike,
 				);
 				if (!overlay) {

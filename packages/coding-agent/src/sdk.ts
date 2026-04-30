@@ -6,7 +6,7 @@ import {
 	INTENT_FIELD,
 	type ThinkingLevel,
 } from "@oh-my-pi/pi-agent-core";
-import type { Message, Model } from "@oh-my-pi/pi-ai";
+import type { Message, Model, SimpleStreamOptions } from "@oh-my-pi/pi-ai";
 import {
 	getOpenAICodexTransportDetails,
 	prewarmOpenAICodexResponses,
@@ -793,7 +793,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		thinkingLevel = defaultRoleSpec.thinkingLevel;
 	}
 
-	// Fall back to settings default
+	// Prefer the selected model's configured defaultLevel, otherwise fall back
+	// to the global settings default.
+	if (thinkingLevel === undefined && model?.thinking?.defaultLevel !== undefined) {
+		thinkingLevel = model.thinking.defaultLevel;
+	}
 	if (thinkingLevel === undefined) {
 		thinkingLevel = settings.get("defaultThinkingLevel");
 	}
@@ -1498,6 +1502,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					return await extensionRunner.emitBeforeProviderRequest(payload);
 				}
 			: undefined;
+		const onResponse: SimpleStreamOptions["onResponse"] | undefined = extensionRunner
+			? async (response, model) => {
+					await extensionRunner.emitAfterProviderResponse(response, model);
+				}
+			: undefined;
 
 		const setToolUIContext = (uiContext: ExtensionUIContext, hasUI: boolean) => {
 			toolContextStore.setUIContext(uiContext, hasUI);
@@ -1527,6 +1536,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			},
 			convertToLlm: convertToLlmFinal,
 			onPayload,
+			onResponse,
 			sessionId: providerSessionId,
 			transformContext,
 			steeringMode: settings.get("steeringMode") ?? "one-at-a-time",
@@ -1599,6 +1609,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			toolRegistry,
 			transformContext,
 			onPayload,
+			onResponse,
 			convertToLlm: convertToLlmFinal,
 			rebuildSystemPrompt,
 			mcpDiscoveryEnabled,

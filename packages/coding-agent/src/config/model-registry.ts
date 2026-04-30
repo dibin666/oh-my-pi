@@ -4,7 +4,6 @@ import {
 	type AssistantMessageEventStream,
 	type Context,
 	createModelManager,
-	DEFAULT_LOCAL_TOKEN,
 	enrichModelThinking,
 	getBundledModels,
 	getBundledProviders,
@@ -13,18 +12,21 @@ import {
 	type Model,
 	type ModelManagerOptions,
 	type ModelRefreshStrategy,
-	type OAuthCredentials,
-	type OAuthLoginCallbacks,
 	openaiCodexModelManagerOptions,
 	PROVIDER_DESCRIPTORS,
 	readModelCache,
 	registerCustomApi,
-	registerOAuthProvider,
 	type SimpleStreamOptions,
 	type ThinkingConfig,
 	unregisterCustomApis,
-	unregisterOAuthProviders,
 } from "@oh-my-pi/pi-ai";
+
+// Sentinel for local-only OAuth token (LM Studio, vLLM) — declared inline to avoid loading
+// any provider module at startup. Must match `DEFAULT_LOCAL_TOKEN` in oauth/lm-studio.ts.
+const DEFAULT_LOCAL_TOKEN = "lm-studio-local";
+
+import { registerOAuthProvider, unregisterOAuthProviders } from "@oh-my-pi/pi-ai/utils/oauth";
+import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/utils/oauth/types";
 import { isRecord, logger } from "@oh-my-pi/pi-utils";
 import { type Static, Type } from "@sinclair/typebox";
 import { type ConfigError, ConfigFile } from "../config";
@@ -281,6 +283,8 @@ const ProviderConfigSchema = Type.Object({
 	discovery: Type.Optional(ProviderDiscoverySchema),
 	models: Type.Optional(Type.Array(ModelDefinitionSchema)),
 	modelOverrides: Type.Optional(Type.Record(Type.String(), ModelOverrideSchema)),
+	/** When true, disables strict tool schemas for this provider (for third-party Anthropic-compatible endpoints that reject the strict field). */
+	disableStrictTools: Type.Optional(Type.Boolean()),
 });
 
 const EquivalenceConfigSchema = Type.Object({
@@ -316,6 +320,7 @@ interface ProviderValidationConfig {
 	oauthConfigured?: boolean;
 	discovery?: ProviderDiscovery;
 	compat?: Model<Api>["compat"];
+	disableStrictTools?: boolean;
 	modelOverrides?: Record<string, unknown>;
 	models: ProviderValidationModel[];
 }
@@ -331,9 +336,16 @@ function validateProviderConfiguration(
 	if (models.length === 0) {
 		if (mode === "models-config") {
 			const hasModelOverrides = config.modelOverrides && Object.keys(config.modelOverrides).length > 0;
-			if (!config.baseUrl && !config.headers && !config.compat && !hasModelOverrides && !config.discovery) {
+			if (
+				!config.baseUrl &&
+				!config.headers &&
+				!config.compat &&
+				!config.disableStrictTools &&
+				!hasModelOverrides &&
+				!config.discovery
+			) {
 				throw new Error(
-					`Provider ${providerName}: must specify "baseUrl", "headers", "compat", "modelOverrides", "discovery", or "models"`,
+					`Provider ${providerName}: must specify "baseUrl", "headers", "compat", "disableStrictTools", "modelOverrides", "discovery", or "models"`,
 				);
 			}
 		}
@@ -394,6 +406,7 @@ export const ModelsConfigFile = new ConfigFile<ModelsConfig>("models", ModelsCon
 					auth: (providerConfig.auth ?? "apiKey") as ProviderAuthMode,
 					discovery: providerConfig.discovery as ProviderDiscovery | undefined,
 					compat: providerConfig.compat,
+					disableStrictTools: providerConfig.disableStrictTools,
 					modelOverrides: providerConfig.modelOverrides,
 					models: (providerConfig.models ?? []) as ProviderValidationModel[],
 				},
@@ -1099,13 +1112,20 @@ export class ModelRegistry {
 		const configuredProviders = new Set(Object.keys(value.providers ?? {}));
 
 		for (const [providerName, providerConfig] of providerEntries) {
-			// Always set overrides when baseUrl/headers/apiKey/compat are present
-			if (providerConfig.baseUrl || providerConfig.headers || providerConfig.apiKey || providerConfig.compat) {
+			// Always set overrides when baseUrl/headers/apiKey/compat/disableStrictTools are present
+			if (
+				providerConfig.baseUrl ||
+				providerConfig.headers ||
+				providerConfig.apiKey ||
+				providerConfig.compat ||
+				providerConfig.disableStrictTools
+			) {
+				const disableStrictCompat = providerConfig.disableStrictTools ? { disableStrictTools: true } : undefined;
 				overrides.set(providerName, {
 					baseUrl: providerConfig.baseUrl,
 					headers: providerConfig.headers,
 					apiKey: providerConfig.apiKey,
-					compat: providerConfig.compat,
+					compat: mergeCompat(providerConfig.compat, disableStrictCompat),
 				});
 			}
 
@@ -1749,6 +1769,9 @@ export class ModelRegistry {
 				this.#customProviderApiKeys.set(providerName, providerConfig.apiKey);
 			}
 			for (const modelDef of modelDefs) {
+				const providerCompat = providerConfig.disableStrictTools
+					? mergeCompat(providerConfig.compat, { disableStrictTools: true })
+					: providerConfig.compat;
 				const model = buildCustomModelOverlay(
 					providerName,
 					providerConfig.baseUrl!,
@@ -1756,7 +1779,7 @@ export class ModelRegistry {
 					providerConfig.headers,
 					providerConfig.apiKey,
 					providerConfig.authHeader,
-					providerConfig.compat,
+					providerCompat,
 					(providerConfig.auth as ProviderAuthMode | undefined) ?? undefined,
 					modelDef as CustomModelDefinitionLike,
 				);

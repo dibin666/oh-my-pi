@@ -13,7 +13,6 @@ It follows the architecture terms from `docs/natives-architecture.md`:
 - `packages/natives/scripts/build-native.ts`
 - `packages/natives/scripts/embed-native.ts`
 - `packages/natives/scripts/gen-enums.ts`
-- `packages/natives/scripts/zig-safe-wrapper.ts`
 - `packages/natives/package.json`
 - `packages/natives/native/index.js`
 - `packages/natives/native/loader-state.js`
@@ -94,15 +93,13 @@ Runtime x64 candidate order also includes the unsuffixed default filename after 
 - `TARGET_PLATFORM`: override output platform tag naming.
 - `TARGET_ARCH`: override output arch naming.
 - `TARGET_VARIANT` (x64 only): force `modern` or `baseline` for output filename and RUSTFLAGS policy.
-- `CARGO_TARGET_DIR`: if set, respected; otherwise CI/cross builds use an isolated managed target directory under `target/napi-build/...`.
+- `CARGO_TARGET_DIR`: respected if set; otherwise the default `target/` dir is used so `Swatinem/rust-cache` can cache cleanly.
 - `RUSTFLAGS`:
   - if unset and not cross-compiling, script sets:
     - modern: `-C target-cpu=x86-64-v3`
     - baseline: `-C target-cpu=x86-64-v2`
     - non-x64 / no variant: `-C target-cpu=native`
   - if already set, script does not override.
-- `ZIG`: optional real Zig path used when the host Zig CPU contract wrapper is enabled.
-- `PI_NATIVE_REAL_ZIG`, `PI_NATIVE_ZIG_TARGET`, `PI_NATIVE_ZIG_CPU`: set internally for `zig-safe-wrapper.ts` when building local x64 Linux/macOS artifacts with Zig available.
 
 ## Build state/lifecycle transitions
 
@@ -114,7 +111,7 @@ Runtime x64 candidate order also includes the unsuffixed default filename after 
    - x64 + `TARGET_VARIANT` → explicit variant;
    - x64 cross-build without `TARGET_VARIANT` → hard error;
    - x64 local build without override → detect host AVX2.
-3. **CPU policy**: set `RUSTFLAGS` if allowed; optionally route Zig through `zig-safe-wrapper.ts` to avoid leaking newer host CPU instructions into x64 artifacts.
+3. **CPU policy**: set `RUSTFLAGS` for the resolved variant unless the caller already provided one.
 4. **Compile**: run napi-rs against `crates/pi-natives` into an isolated output directory.
 5. **Locate artifact**: accept the canonical filename or a single napi-rs-generated `pi_natives.<platform>-<arch>*.node` candidate.
 6. **Install**: copy/rename addon into `packages/natives/native`.

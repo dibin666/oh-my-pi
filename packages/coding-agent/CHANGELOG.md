@@ -1,10 +1,38 @@
 # Changelog
 
 ## [Unreleased]
+
+## [14.5.13] - 2026-05-01
+
+### Breaking Changes
+
+- Removed the built-in `python` tool in favor of `eval`, so tool allowlists and tool-call handlers referencing `python` need to migrate
+- Removed the `python.toolMode` setting and replaced mode control with separate `eval.py` and `eval.js` toggles
+- Changed the tool runtime config surface by migrating `python` execution timeout/export behavior to `eval` and replacing `./ipy/*` internal exports with `./eval/*` paths
+- Changed the `eval` tool wire format to a single `input` string composed of markdown fenced code blocks (with per-fence language, timeout, title, and reset metadata in the info string) instead of top-level `cells`, `language`, `timeout`, and `reset` fields
+
+### Added
+
+- Added a JavaScript backend to the `eval` tool with an in-process VM runtime and JS helper bridge (`read`, `write`, `glob`, etc.)
+- Added `eval.py` and `eval.js` settings so Python and JavaScript `eval` backends can be enabled or disabled independently
+- Added `rename_file` action to the Lsp tool to rename files and directories with LSP `workspace/willRenameFiles` and `workspace/didRenameFiles` flow, applying returned workspace edits before moving files
+- Added `apply: false` preview mode for `rename_file` so users can see planned LSP edits without performing filesystem changes
+- Added `request` action to invoke arbitrary LSP methods, with automatic `textDocument`/`position` parameter construction from `file`/`line`/`symbol` and support for explicit JSON `payload`
+- Added `capabilities` action to display language server capabilities (for a file or all configured servers) through the LSP tool
+
 ### Changed
 
+- Changed AGENTS.md discovery to respect `.gitignore` files during project context collection so ignored context files are no longer loaded
+- Changed eval tool initialization to skip Python kernel preflight when the JavaScript backend is enabled, avoiding unnecessary startup checks
+- Changed model registry refresh flow to defer rebuilding the canonical model index until refresh operations complete, reducing refresh churn
+- Changed execution/tool discovery flow so `exec` maps to `eval` when any `eval` backend is enabled, while `bash` stays independently available
+- Changed `eval` dispatch to automatically fall back to JavaScript when Python is unavailable and JavaScript backend is enabled
 - Parallelized plugin root preloading with other startup initialization in `runRootCommand` to reduce startup latency
 - Parallelized session bootstrap work in `createAgentSession`, including AGENTS.md scanning, context discovery, prompt template loading, slash command loading, and skill discovery, to reduce time to first available session
+
+### Fixed
+
+- Fixed eval startup messaging to report `eval` as unavailable when Python is unreachable and JavaScript backend is disabled
 
 ## [14.5.12] - 2026-04-30
 

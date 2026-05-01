@@ -22,6 +22,14 @@ import stealthWorkerScript from "../puppeteer/13_stealth_worker.txt" with { type
 import { ToolError } from "../tool-errors";
 
 export const DEFAULT_VIEWPORT = { width: 1365, height: 768, deviceScaleFactor: 1.25 };
+
+/**
+ * Per-CDP-message timeout applied to every puppeteer launch/connect. Set above
+ * `TOOL_TIMEOUTS.browser.max` (30s) so the agent-side wall-clock is the canonical
+ * limit; this constant only catches genuinely stuck CDP sockets (renderer wedged,
+ * connection dropped, etc.).
+ */
+export const BROWSER_PROTOCOL_TIMEOUT_MS = 60_000;
 export const STEALTH_IGNORE_DEFAULT_ARGS = [
 	"--disable-extensions",
 	"--disable-default-apps",
@@ -52,6 +60,19 @@ export async function loadPuppeteer(): Promise<typeof Puppeteer> {
 		return puppeteerModule;
 	} finally {
 		process.chdir(prev);
+	}
+}
+
+let puppeteerModuleWorker: typeof Puppeteer | undefined;
+export async function loadPuppeteerInWorker(safeDir: string): Promise<typeof Puppeteer> {
+	if (puppeteerModuleWorker) return puppeteerModuleWorker;
+	const orig = process.cwd;
+	Object.defineProperty(process, "cwd", { value: () => safeDir, configurable: true });
+	try {
+		puppeteerModuleWorker = (await import("puppeteer-core")).default;
+		return puppeteerModuleWorker;
+	} finally {
+		Object.defineProperty(process, "cwd", { value: orig, configurable: true });
 	}
 }
 
@@ -243,6 +264,7 @@ export async function launchHeadlessBrowser(opts: LaunchHeadlessOptions): Promis
 		executablePath: await ensureChromiumExecutable(),
 		args: launchArgs,
 		ignoreDefaultArgs: [...STEALTH_IGNORE_DEFAULT_ARGS],
+		protocolTimeout: BROWSER_PROTOCOL_TIMEOUT_MS,
 	});
 }
 

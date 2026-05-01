@@ -542,6 +542,29 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"model.streamIdleTimeoutMs": {
+		type: "number",
+		default: -1,
+		ui: {
+			tab: "model",
+			label: "Stream Idle Timeout",
+			description: "Maximum gap between model stream events in milliseconds (-1 = provider default, 0 = disable)",
+			submenu: true,
+		},
+	},
+
+	"model.streamFirstEventTimeoutMs": {
+		type: "number",
+		default: -1,
+		ui: {
+			tab: "model",
+			label: "First Event Timeout",
+			description:
+				"Maximum wait for the first model stream event in milliseconds (-1 = provider default, 0 = disable)",
+			submenu: true,
+		},
+	},
+
 	// Retries
 	"retry.enabled": { type: "boolean", default: true },
 
@@ -1447,7 +1470,7 @@ export const SETTINGS_SCHEMA = {
 
 	"async.pollWaitDuration": {
 		type: "enum",
-		values: ["5s", "10s", "30s", "1m", "5m"] as const,
+		values: ["5s", "10s", "30s", "1m", "5m", "10m", "30m"] as const,
 		default: "30s",
 		ui: {
 			tab: "tools",

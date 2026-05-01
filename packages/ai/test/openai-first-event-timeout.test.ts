@@ -4,9 +4,11 @@ import { streamAzureOpenAIResponses } from "../src/providers/azure-openai-respon
 import { streamOpenAICompletions } from "../src/providers/openai-completions";
 import { streamOpenAIResponses } from "../src/providers/openai-responses";
 import type { Context, Model, TextContent } from "../src/types";
+import { getOpenAIStreamIdleTimeoutMs } from "../src/utils/idle-iterator";
 import { waitForDelayOrAbort } from "./helpers";
 
 const originalFetch = global.fetch;
+const originalOpenAIStreamIdleTimeoutMs = Bun.env.PI_OPENAI_STREAM_IDLE_TIMEOUT_MS;
 
 const openAIResponsesModel = getBundledModel("openai", "gpt-5-mini") as Model<"openai-responses">;
 const openAICompletionsModel = {
@@ -211,9 +213,21 @@ async function expectDelayedRequestSetupSucceeds(
 
 afterEach(() => {
 	global.fetch = originalFetch;
+	if (originalOpenAIStreamIdleTimeoutMs === undefined) {
+		delete Bun.env.PI_OPENAI_STREAM_IDLE_TIMEOUT_MS;
+	} else {
+		Bun.env.PI_OPENAI_STREAM_IDLE_TIMEOUT_MS = originalOpenAIStreamIdleTimeoutMs;
+	}
 });
 
 describe("OpenAI-family first-event timeouts", () => {
+	it("uses explicit stream idle timeout overrides before env/default values", () => {
+		Bun.env.PI_OPENAI_STREAM_IDLE_TIMEOUT_MS = "3333";
+
+		expect(getOpenAIStreamIdleTimeoutMs(2500)).toBe(2500);
+		expect(getOpenAIStreamIdleTimeoutMs(0)).toBeUndefined();
+		expect(getOpenAIStreamIdleTimeoutMs()).toBe(3333);
+	});
 	it("surfaces the OpenAI responses first-event timeout message instead of a generic abort", async () => {
 		await expectFirstEventTimeout(
 			streamFirstEventTimeoutMs =>

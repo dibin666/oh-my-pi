@@ -195,14 +195,22 @@ function getCodexWebSocketRetryDelayMs(retry: number): number {
 	return baseDelay * Math.max(1, retry);
 }
 
-function getCodexWebSocketIdleTimeoutMs(): number {
+function getCodexWebSocketIdleTimeoutMs(overrideMs?: number): number {
+	if (overrideMs !== undefined) {
+		if (!Number.isFinite(overrideMs) || overrideMs <= 0) return 0;
+		return Math.trunc(overrideMs);
+	}
 	return parseCodexPositiveInteger($env.PI_CODEX_WEBSOCKET_IDLE_TIMEOUT_MS, CODEX_WEBSOCKET_IDLE_TIMEOUT_MS);
 }
 
-function getCodexWebSocketFirstEventTimeoutMs(): number {
+function getCodexWebSocketFirstEventTimeoutMs(idleTimeoutMs: number, overrideMs?: number): number {
+	if (overrideMs !== undefined) {
+		if (!Number.isFinite(overrideMs) || overrideMs <= 0) return 0;
+		return Math.trunc(overrideMs);
+	}
 	return parseCodexPositiveInteger(
 		$env.PI_CODEX_WEBSOCKET_FIRST_EVENT_TIMEOUT_MS,
-		Math.min(CODEX_WEBSOCKET_FIRST_EVENT_TIMEOUT_MS, getCodexWebSocketIdleTimeoutMs()),
+		Math.min(CODEX_WEBSOCKET_FIRST_EVENT_TIMEOUT_MS, idleTimeoutMs || CODEX_WEBSOCKET_FIRST_EVENT_TIMEOUT_MS),
 	);
 }
 
@@ -404,7 +412,7 @@ function createRequestSetup(options: OpenAICodexResponsesOptions | undefined): C
 		source: AsyncGenerator<Record<string, unknown>>,
 	): AsyncGenerator<Record<string, unknown>> =>
 		iterateWithIdleTimeout(source, {
-			idleTimeoutMs: getOpenAIStreamIdleTimeoutMs(),
+			idleTimeoutMs: getOpenAIStreamIdleTimeoutMs(options?.streamIdleTimeoutMs),
 			errorMessage: "OpenAI Codex SSE stream stalled while waiting for the next event",
 			onIdle: () => requestAbortController.abort(),
 		});
@@ -613,6 +621,7 @@ async function openCodexWebSocketTransport(
 		websocketRequest,
 		websocketState,
 		requestSetup.requestSignal,
+		options,
 	);
 	return { eventStream, requestBodyForState, transport: "websocket" };
 }
@@ -1703,6 +1712,11 @@ class CodexWebSocketConnection {
 		this.#onHandshakeHeaders = options.onHandshakeHeaders;
 	}
 
+	updateTimeouts(idleTimeoutMs: number, firstEventTimeoutMs: number): void {
+		this.#idleTimeoutMs = idleTimeoutMs;
+		this.#firstEventTimeoutMs = firstEventTimeoutMs;
+	}
+
 	isOpen(): boolean {
 		return this.#socket?.readyState === WebSocket.OPEN;
 	}
@@ -1926,10 +1940,16 @@ async function getOrCreateCodexWebSocketConnection(
 	url: string,
 	headers: Headers,
 	signal?: AbortSignal,
+	options?: OpenAICodexResponsesOptions,
 ): Promise<CodexWebSocketConnection> {
 	const headerRecord = headersToRecord(headers);
 	if (state.connection?.isOpen()) {
 		if (state.connection.matchesAuth(headerRecord)) {
+			const idleTimeoutMs = getCodexWebSocketIdleTimeoutMs(options?.streamIdleTimeoutMs);
+			state.connection.updateTimeouts(
+				idleTimeoutMs,
+				getCodexWebSocketFirstEventTimeoutMs(idleTimeoutMs, options?.streamFirstEventTimeoutMs),
+			);
 			logger.time("codexWs:reuseOpenSocket");
 			return state.connection;
 		}
@@ -1939,9 +1959,10 @@ async function getOrCreateCodexWebSocketConnection(
 	state.connection?.close("reconnect");
 	resetCodexWebSocketAppendState(state);
 	logger.time("codexWs:newSocket");
+	const idleTimeoutMs = getCodexWebSocketIdleTimeoutMs(options?.streamIdleTimeoutMs);
 	state.connection = new CodexWebSocketConnection(url, headerRecord, {
-		idleTimeoutMs: getCodexWebSocketIdleTimeoutMs(),
-		firstEventTimeoutMs: getCodexWebSocketFirstEventTimeoutMs(),
+		idleTimeoutMs,
+		firstEventTimeoutMs: getCodexWebSocketFirstEventTimeoutMs(idleTimeoutMs, options?.streamFirstEventTimeoutMs),
 		onHandshakeHeaders: handshakeHeaders => {
 			updateCodexSessionMetadataFromHeaders(state, handshakeHeaders);
 		},
@@ -2004,8 +2025,9 @@ async function openCodexWebSocketEventStream(
 	request: Record<string, unknown>,
 	state: CodexWebSocketSessionState,
 	signal?: AbortSignal,
+	options?: OpenAICodexResponsesOptions,
 ): Promise<AsyncGenerator<Record<string, unknown>>> {
-	const connection = await getOrCreateCodexWebSocketConnection(state, url, headers, signal);
+	const connection = await getOrCreateCodexWebSocketConnection(state, url, headers, signal, options);
 	return connection.streamRequest(request, signal);
 }
 

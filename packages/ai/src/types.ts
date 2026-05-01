@@ -235,6 +235,11 @@ export interface StreamOptions {
 	 */
 	onResponse?: (response: ProviderResponseMetadata, model?: Model<Api>) => void | Promise<void>;
 	/**
+	 * Optional override for the idle gap watchdog between streamed events in milliseconds.
+	 * Set to 0 to disable the inter-event watchdog for this request.
+	 */
+	streamIdleTimeoutMs?: number;
+	/**
 	 * Optional override for the first streamed event watchdog in milliseconds.
 	 * Set to 0 to disable the first-event watchdog for this request.
 	 */

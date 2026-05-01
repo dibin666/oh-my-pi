@@ -348,6 +348,18 @@ export class SelectorController {
 				this.ctx.session.agent.repetitionPenalty = repetitionPenalty >= 0 ? repetitionPenalty : undefined;
 				break;
 			}
+			case "model.streamIdleTimeoutMs": {
+				const timeoutMs = typeof value === "number" ? value : Number(value);
+				this.ctx.session.agent.streamIdleTimeoutMs =
+					Number.isFinite(timeoutMs) && timeoutMs >= 0 ? Math.trunc(timeoutMs) : undefined;
+				break;
+			}
+			case "model.streamFirstEventTimeoutMs": {
+				const timeoutMs = typeof value === "number" ? value : Number(value);
+				this.ctx.session.agent.streamFirstEventTimeoutMs =
+					Number.isFinite(timeoutMs) && timeoutMs >= 0 ? Math.trunc(timeoutMs) : undefined;
+				break;
+			}
 			case "statusLinePreset":
 			case "statusLineSeparator":
 			case "statusLineShowHooks":

@@ -625,6 +625,11 @@ function buildMCPPromptCommands(manager: MCPManager): LoadedCustomCommand[] {
 	}
 	return commands;
 }
+function normalizeModelStreamTimeoutMs(value: number): number | undefined {
+	if (!Number.isFinite(value) || value < 0) return undefined;
+	return Math.trunc(value);
+}
+
 /**
  * Create an AgentSession with the specified options.
  *
@@ -1568,6 +1573,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			presencePenalty: settings.get("presencePenalty") >= 0 ? settings.get("presencePenalty") : undefined,
 			repetitionPenalty: settings.get("repetitionPenalty") >= 0 ? settings.get("repetitionPenalty") : undefined,
 			serviceTier: initialServiceTier,
+			streamIdleTimeoutMs: normalizeModelStreamTimeoutMs(settings.get("model.streamIdleTimeoutMs")),
+			streamFirstEventTimeoutMs: normalizeModelStreamTimeoutMs(settings.get("model.streamFirstEventTimeoutMs")),
 			kimiApiFormat: settings.get("providers.kimiApiFormat") ?? "anthropic",
 			preferWebsockets: preferOpenAICodexWebsockets,
 			getToolContext: tc => toolContextStore.getContext(tc),

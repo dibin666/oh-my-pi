@@ -165,6 +165,10 @@ export interface AgentOptions {
 	 * Default: 60000 (60 seconds). Set to 0 to disable the cap.
 	 */
 	maxRetryDelayMs?: number;
+	/** Override the provider stream idle-gap watchdog in milliseconds. 0 disables it. */
+	streamIdleTimeoutMs?: SimpleStreamOptions["streamIdleTimeoutMs"];
+	/** Override the first streamed event watchdog in milliseconds. 0 disables it. */
+	streamFirstEventTimeoutMs?: SimpleStreamOptions["streamFirstEventTimeoutMs"];
 
 	/**
 	 * Provides tool execution context, resolved per tool call.
@@ -237,6 +241,8 @@ export class Agent {
 	#repetitionPenalty?: number;
 	#serviceTier?: ServiceTier;
 	#maxRetryDelayMs?: number;
+	#streamIdleTimeoutMs?: SimpleStreamOptions["streamIdleTimeoutMs"];
+	#streamFirstEventTimeoutMs?: SimpleStreamOptions["streamFirstEventTimeoutMs"];
 	#getToolContext?: (toolCall?: ToolCallContext) => AgentToolContext | undefined;
 	#cursorExecHandlers?: CursorExecHandlers;
 	#cursorOnToolResult?: CursorToolResultHandler;
@@ -276,6 +282,8 @@ export class Agent {
 		this.#repetitionPenalty = opts.repetitionPenalty;
 		this.#serviceTier = opts.serviceTier;
 		this.#maxRetryDelayMs = opts.maxRetryDelayMs;
+		this.#streamIdleTimeoutMs = opts.streamIdleTimeoutMs;
+		this.#streamFirstEventTimeoutMs = opts.streamFirstEventTimeoutMs;
 		this.getApiKey = opts.getApiKey;
 		this.#onPayload = opts.onPayload;
 		this.#onResponse = opts.onResponse;
@@ -408,6 +416,22 @@ export class Agent {
 	 */
 	set maxRetryDelayMs(value: number | undefined) {
 		this.#maxRetryDelayMs = value;
+	}
+
+	get streamIdleTimeoutMs(): number | undefined {
+		return this.#streamIdleTimeoutMs;
+	}
+
+	set streamIdleTimeoutMs(value: number | undefined) {
+		this.#streamIdleTimeoutMs = value;
+	}
+
+	get streamFirstEventTimeoutMs(): number | undefined {
+		return this.#streamFirstEventTimeoutMs;
+	}
+
+	set streamFirstEventTimeoutMs(value: number | undefined) {
+		this.#streamFirstEventTimeoutMs = value;
 	}
 
 	get state(): AgentState {
@@ -763,6 +787,8 @@ export class Agent {
 			providerSessionState: this.#providerSessionState,
 			thinkingBudgets: this.#thinkingBudgets,
 			maxRetryDelayMs: this.#maxRetryDelayMs,
+			streamIdleTimeoutMs: this.#streamIdleTimeoutMs,
+			streamFirstEventTimeoutMs: this.#streamFirstEventTimeoutMs,
 			kimiApiFormat: this.#kimiApiFormat,
 			preferWebsockets: this.#preferWebsockets,
 			convertToLlm: this.#convertToLlm,

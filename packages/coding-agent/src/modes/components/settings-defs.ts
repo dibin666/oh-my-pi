@@ -71,6 +71,25 @@ const CONDITIONS: Record<string, () => boolean> = {
 
 type OptionList = ReadonlyArray<{ value: string; label: string; description?: string }>;
 type OptionProvider = (() => OptionList) | OptionList;
+const STREAM_TIMEOUT_OPTIONS: OptionList = [
+	{ value: "-1", label: "Provider default", description: "Use the provider/env default" },
+	{ value: "0", label: "Disabled", description: "Do not abort idle model streams" },
+	{ value: "60000", label: "1 minute" },
+	{ value: "120000", label: "2 minutes" },
+	{ value: "300000", label: "5 minutes" },
+	{ value: "600000", label: "10 minutes" },
+	{ value: "1800000", label: "30 minutes" },
+];
+
+const JOB_POLL_WAIT_OPTIONS: OptionList = [
+	{ value: "5s", label: "5 seconds" },
+	{ value: "10s", label: "10 seconds" },
+	{ value: "30s", label: "30 seconds" },
+	{ value: "1m", label: "1 minute" },
+	{ value: "5m", label: "5 minutes" },
+	{ value: "10m", label: "10 minutes" },
+	{ value: "30m", label: "30 minutes" },
+];
 
 const OPTION_PROVIDERS: Partial<Record<SettingPath, OptionProvider>> = {
 	// Context maintenance strategy
@@ -230,6 +249,7 @@ const OPTION_PROVIDERS: Partial<Record<SettingPath, OptionProvider>> = {
 		{ value: "5", label: "5 lines" },
 		{ value: "10", label: "10 lines" },
 	],
+	"async.pollWaitDuration": JOB_POLL_WAIT_OPTIONS,
 	// Autocomplete max visible
 	autocompleteMaxVisible: [
 		{ value: "3", label: "3 items" },
@@ -424,6 +444,8 @@ const OPTION_PROVIDERS: Partial<Record<SettingPath, OptionProvider>> = {
 		{ value: "scale", label: "Scale", description: "Use Scale Tier credits when available" },
 		{ value: "priority", label: "Priority", description: "Use Priority processing" },
 	],
+	"model.streamIdleTimeoutMs": STREAM_TIMEOUT_OPTIONS,
+	"model.streamFirstEventTimeoutMs": STREAM_TIMEOUT_OPTIONS,
 	// Symbol preset
 	symbolPreset: [
 		{ value: "unicode", label: "Unicode", description: "Standard symbols (default)" },

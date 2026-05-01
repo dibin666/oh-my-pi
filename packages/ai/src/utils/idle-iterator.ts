@@ -16,8 +16,11 @@ function normalizeIdleTimeoutMs(value: string | undefined, fallback: number): nu
  *
  * Set `PI_OPENAI_STREAM_IDLE_TIMEOUT_MS=0` to disable the watchdog.
  */
-export function getOpenAIStreamIdleTimeoutMs(): number | undefined {
-	return normalizeIdleTimeoutMs($env.PI_OPENAI_STREAM_IDLE_TIMEOUT_MS, DEFAULT_OPENAI_STREAM_IDLE_TIMEOUT_MS);
+export function getOpenAIStreamIdleTimeoutMs(overrideMs?: number): number | undefined {
+	return normalizeIdleTimeoutMs(
+		overrideMs === undefined ? $env.PI_OPENAI_STREAM_IDLE_TIMEOUT_MS : String(overrideMs),
+		DEFAULT_OPENAI_STREAM_IDLE_TIMEOUT_MS,
+	);
 }
 
 /**

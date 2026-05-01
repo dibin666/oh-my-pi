@@ -2,7 +2,7 @@
 set -euo pipefail
 
 INSTALL_PATH="${OMP_INSTALL_PATH:-/home/dibin/.local/bin/omp}"
-SUDO_CMD="${SUDO_CMD-sudo}"
+SUDO_CMD="${SUDO_CMD-}"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
@@ -41,6 +41,9 @@ if [ -n "$SUDO_CMD" ]; then
 	require_command "$SUDO_CMD"
 fi
 
+section "Installing dependencies"
+run bun install --frozen-lockfile
+
 section "Building native addon"
 run bun --cwd="$REPO_ROOT/packages/natives" run build
 
@@ -56,19 +59,25 @@ section "Built binary"
 run "$BUILD_OUTPUT" --version
 
 INSTALL_DIR="$(dirname -- "$INSTALL_PATH")"
-if [ -e "$INSTALL_PATH" ]; then
-	OWNER_GROUP="$(stat -c '%u:%g' "$INSTALL_PATH")"
-else
-	OWNER_GROUP="$(id -u):$(id -g)"
+INSTALL_DIR_ARGS=(-d -m 0755)
+INSTALL_FILE_ARGS=(-m 0755)
+if [ -n "$SUDO_CMD" ]; then
+	if [ -e "$INSTALL_PATH" ]; then
+		OWNER_GROUP="$(stat -c '%u:%g' "$INSTALL_PATH")"
+	else
+		OWNER_GROUP="$(id -u):$(id -g)"
+	fi
+	OWNER="${OWNER_GROUP%%:*}"
+	GROUP="${OWNER_GROUP#*:}"
+	INSTALL_DIR_ARGS+=(-o "$OWNER" -g "$GROUP")
+	INSTALL_FILE_ARGS+=(-o "$OWNER" -g "$GROUP")
 fi
-OWNER="${OWNER_GROUP%%:*}"
-GROUP="${OWNER_GROUP#*:}"
 
 section "Installing to $INSTALL_PATH"
 if [ ! -d "$INSTALL_DIR" ]; then
-	run_privileged install -d -m 0755 -o "$OWNER" -g "$GROUP" "$INSTALL_DIR"
+	run_privileged install "${INSTALL_DIR_ARGS[@]}" "$INSTALL_DIR"
 fi
-run_privileged install -m 0755 -o "$OWNER" -g "$GROUP" "$BUILD_OUTPUT" "$INSTALL_PATH"
+run_privileged install "${INSTALL_FILE_ARGS[@]}" "$BUILD_OUTPUT" "$INSTALL_PATH"
 
 section "Installed binary"
 run "$INSTALL_PATH" --version

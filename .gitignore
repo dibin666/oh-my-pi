@@ -66,3 +66,5 @@ scripts/session-stats/edit-analysis.csv
 # parallel-agent worktrees
 .wt/
 CPU*.md
+
+plugin

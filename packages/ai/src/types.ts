@@ -251,6 +251,15 @@ export interface StreamOptions {
 // Unified options with reasoning passed to streamSimple() and completeSimple()
 export interface SimpleStreamOptions extends StreamOptions {
 	reasoning?: Effort;
+	/**
+	 * Force-disable reasoning for the request even when the model supports it.
+	 * Takes precedence over `reasoning`. Useful for fast utility calls
+	 * (e.g. title generation) where the model would otherwise burn the entire
+	 * output budget on internal thinking. Currently honored by OpenRouter
+	 * (sends `reasoning: { enabled: false }`); other providers already behave
+	 * this way when `reasoning` is undefined.
+	 */
+	disableReasoning?: boolean;
 	/** Custom token budgets for thinking levels (token-based providers only) */
 	thinkingBudgets?: ThinkingBudgets;
 	/** Cursor exec handlers for local tool execution */
@@ -558,6 +567,8 @@ export interface OpenAICompat {
 	reasoningContentField?: "reasoning_content" | "reasoning" | "reasoning_text";
 	/** Whether assistant tool-call messages must include reasoning content. Default: false. */
 	requiresReasoningContentForToolCalls?: boolean;
+	/** Whether the provider accepts a synthetic placeholder (e.g. ".") for missing reasoning_content on tool-call turns. Default: true. Set to false for providers like DeepSeek that validate the exact reasoning_content value. */
+	allowsSyntheticReasoningContentForToolCalls?: boolean;
 	/** Whether assistant tool-call messages must include non-empty content. Default: false. */
 	requiresAssistantContentForToolCalls?: boolean;
 	/** Whether the provider supports the `tool_choice` parameter. Default: true. */
@@ -601,6 +612,10 @@ export interface AnthropicCompat {
 	 * tags: 'disabled', 'enabled'`.
 	 */
 	disableAdaptiveThinking?: boolean;
+	/** Whether tools may include Anthropic's per-tool eager_input_streaming flag. Default: true. */
+	supportsEagerToolInputStreaming?: boolean;
+	/** Whether long prompt-cache retention (`ttl: "1h"`) is supported. Default: true for canonical Anthropic API. */
+	supportsLongCacheRetention?: boolean;
 }
 
 /**

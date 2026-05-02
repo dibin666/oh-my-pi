@@ -17,7 +17,7 @@ import { invalidate as invalidateFsCache } from "./capability/fs";
 import type { Args } from "./cli/args";
 import { processFileArguments } from "./cli/file-processor";
 import { buildInitialMessage } from "./cli/initial-message";
-import { listModels } from "./cli/list-models";
+import { runListModelsCommand } from "./cli/list-models";
 import { selectSession } from "./cli/session-picker";
 import { findConfigFile } from "./config";
 import { ModelRegistry, ModelsConfigFile } from "./config/model-registry";
@@ -253,17 +253,27 @@ async function getChangelogForDisplay(parsed: Args): Promise<string | undefined>
 	if (!lastVersion) {
 		if (entries.length > 0) {
 			settings.set("lastChangelogVersion", VERSION);
+			await flushChangelogVersion();
 			return entries.map(e => e.content).join("\n\n");
 		}
 	} else {
 		const newEntries = getNewEntries(entries, lastVersion);
 		if (newEntries.length > 0) {
 			settings.set("lastChangelogVersion", VERSION);
+			await flushChangelogVersion();
 			return newEntries.map(e => e.content).join("\n\n");
 		}
 	}
 
 	return undefined;
+}
+
+async function flushChangelogVersion(): Promise<void> {
+	try {
+		await settings.flush();
+	} catch (error: unknown) {
+		logger.warn("Failed to persist lastChangelogVersion", { error });
+	}
 }
 
 async function createSessionManager(parsed: Args, cwd: string): Promise<SessionManager | undefined> {
@@ -594,10 +604,25 @@ export async function runRootCommand(parsed: Args, rawArgs: string[]): Promise<v
 	}
 
 	if (parsedArgs.listModels !== undefined) {
-		await logger.time("settings:init:list-models", Settings.init, { cwd: getProjectDir() });
+		const settingsInstance = await logger.time("settings:init:list-models", Settings.init, {
+			cwd: getProjectDir(),
+		});
 		await modelRegistry.refresh("online");
+		const cliExtensionPaths = parsedArgs.noExtensions
+			? []
+			: [...(parsedArgs.extensions ?? []), ...(parsedArgs.hooks ?? [])];
+		const settingsExtensions = settingsInstance.get("extensions") ?? [];
+		const disabledExtensionIds = settingsInstance.get("disabledExtensions") ?? [];
 		const searchPattern = typeof parsedArgs.listModels === "string" ? parsedArgs.listModels : undefined;
-		await listModels(modelRegistry, searchPattern);
+		await runListModelsCommand({
+			modelRegistry,
+			cwd: getProjectDir(),
+			additionalExtensionPaths: cliExtensionPaths,
+			settingsExtensions,
+			disabledExtensionIds,
+			disableExtensionDiscovery: Boolean(parsedArgs.noExtensions),
+			searchPattern,
+		});
 		process.exit(0);
 	}
 

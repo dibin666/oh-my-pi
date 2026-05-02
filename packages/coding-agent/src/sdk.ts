@@ -300,7 +300,6 @@ function getDefaultAgentDir(): string {
  */
 export async function discoverAuthStorage(agentDir: string = getDefaultAgentDir()): Promise<AuthStorage> {
 	const dbPath = getAgentDbPath(agentDir);
-	logger.debug("discoverAuthStorage", { agentDir, dbPath });
 
 	const storage = await AuthStorage.create(dbPath, { configValueResolver: resolveConfigValue });
 	await storage.reload();
@@ -428,6 +427,9 @@ function isCustomTool(tool: CustomTool | ToolDefinition): tool is CustomTool {
 }
 
 const TOOL_DEFINITION_MARKER = Symbol("__isToolDefinition");
+
+/** Matches the truncation applied to per-server instructions inside `rebuildSystemPrompt`. */
+const MAX_MCP_INSTRUCTIONS_LENGTH = 4000;
 
 let sshCleanupRegistered = false;
 
@@ -1343,7 +1345,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			const serverInstructions = mcpManager?.getServerInstructions();
 			let appendPrompt: string | undefined = memoryInstructions ?? undefined;
 			if (serverInstructions && serverInstructions.size > 0) {
-				const MAX_INSTRUCTIONS_LENGTH = 4000;
 				const parts: string[] = [];
 				if (appendPrompt) parts.push(appendPrompt);
 				parts.push(
@@ -1351,8 +1352,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				);
 				for (const [srvName, srvInstructions] of serverInstructions) {
 					const truncated =
-						srvInstructions.length > MAX_INSTRUCTIONS_LENGTH
-							? `${srvInstructions.slice(0, MAX_INSTRUCTIONS_LENGTH)}\n[truncated]`
+						srvInstructions.length > MAX_MCP_INSTRUCTIONS_LENGTH
+							? `${srvInstructions.slice(0, MAX_MCP_INSTRUCTIONS_LENGTH)}\n[truncated]`
 							: srvInstructions;
 					parts.push(`### ${srvName}\n${truncated}`);
 				}
@@ -1634,6 +1635,20 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			onResponse,
 			convertToLlm: convertToLlmFinal,
 			rebuildSystemPrompt,
+			getMcpServerInstructions: mcpManager
+				? () => {
+						const raw = mcpManager.getServerInstructions();
+						if (!raw || raw.size === 0) return raw;
+						const out = new Map<string, string>();
+						for (const [name, text] of raw) {
+							out.set(
+								name,
+								text.length > MAX_MCP_INSTRUCTIONS_LENGTH ? text.slice(0, MAX_MCP_INSTRUCTIONS_LENGTH) : text,
+							);
+						}
+						return out;
+					}
+				: undefined,
 			mcpDiscoveryEnabled,
 			initialSelectedMCPToolNames,
 			defaultSelectedMCPToolNames,

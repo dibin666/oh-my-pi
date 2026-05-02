@@ -980,18 +980,28 @@ export interface VercelAiGatewayModelManagerConfig {
 	baseUrl?: string;
 }
 
+function normalizeVercelAiGatewayBaseUrls(rawBaseUrl: string | undefined): { baseUrl: string; catalogBaseUrl: string } {
+	const baseUrl = (rawBaseUrl === undefined ? "https://ai-gateway.vercel.sh" : rawBaseUrl.trim()).replace(/\/+$/, "");
+	const catalogBaseUrl = baseUrl === "" || baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`;
+
+	return {
+		baseUrl: baseUrl.endsWith("/v1") ? baseUrl.slice(0, -3) : baseUrl,
+		catalogBaseUrl,
+	};
+}
+
 export function vercelAiGatewayModelManagerOptions(
 	config?: VercelAiGatewayModelManagerConfig,
 ): ModelManagerOptions<"anthropic-messages"> {
 	const apiKey = config?.apiKey;
-	const baseUrl = config?.baseUrl ?? "https://ai-gateway.vercel.sh";
+	const { baseUrl, catalogBaseUrl } = normalizeVercelAiGatewayBaseUrls(config?.baseUrl);
 	return {
 		providerId: "vercel-ai-gateway",
 		fetchDynamicModels: () =>
 			fetchOpenAICompatibleModels({
 				api: "anthropic-messages",
 				provider: "vercel-ai-gateway",
-				baseUrl,
+				baseUrl: catalogBaseUrl,
 				apiKey,
 				filterModel: (entry: OpenAICompatibleModelRecord) => {
 					const tags = entry.tags;
@@ -1007,6 +1017,7 @@ export function vercelAiGatewayModelManagerOptions(
 
 					return {
 						...defaults,
+						baseUrl,
 						reasoning: tags.includes("reasoning"),
 						input: tags.includes("vision") ? ["text", "image"] : ["text"],
 						cost: {
@@ -1857,12 +1868,18 @@ function createOpenCodeApiResolution(
 }
 
 const OPENCODE_ZEN_API_RESOLUTION = createOpenCodeApiResolution("https://opencode.ai/zen");
-// OpenCode Go: models.dev declares qwen3.5-plus / qwen3.6-plus with
-// `provider.npm = "@ai-sdk/anthropic"`, but per the OpenCode Go endpoint table
-// (https://opencode.ai/docs/go/#endpoints) they are served via @ai-sdk/alibaba
-// at https://opencode.ai/zen/go/v1/chat/completions (OpenAI-compatible).
-// Override the resolver so regenerating models.json keeps the correct routing.
+// OpenCode Go: models.dev declares minimax-m2.7 / qwen3.5-plus / qwen3.6-plus
+// with `provider.npm = "@ai-sdk/anthropic"`, but the OpenCode Go gateway only
+// serves them at `https://opencode.ai/zen/go/v1/chat/completions` (verified
+// against https://opencode.ai/zen/go/v1/models and the upstream endpoint
+// table at https://opencode.ai/docs/go/#endpoints — minimax-m2.5 works the
+// same way and lacks an `npm` field on models.dev so it already falls through
+// to the openai-completions default). Without this override the resolver
+// would POST anthropic-style requests to /v1/messages and the gateway would
+// return its `Page Not Found` HTML (issue #887). Override the resolver so
+// regenerating models.json keeps the correct routing.
 const OPENCODE_GO_API_RESOLUTION = createOpenCodeApiResolution("https://opencode.ai/zen/go", {
+	"minimax-m2.7": "openai-completions",
 	"qwen3.5-plus": "openai-completions",
 	"qwen3.6-plus": "openai-completions",
 });

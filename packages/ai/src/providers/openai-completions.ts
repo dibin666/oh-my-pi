@@ -9,6 +9,7 @@ import type {
 	ChatCompletionMessageParam,
 	ChatCompletionToolMessageParam,
 } from "openai/resources/chat/completions";
+import type { Effort } from "../model-thinking";
 import { calculateCost } from "../models";
 import { getEnvApiKey } from "../stream";
 import {
@@ -17,6 +18,7 @@ import {
 	type Message,
 	type MessageAttribution,
 	type Model,
+	type OpenAICompat,
 	type ProviderSessionState,
 	type ServiceTier,
 	type StopReason,
@@ -79,6 +81,43 @@ function normalizeMistralToolId(id: string, isMistral: boolean): string {
 	return normalized;
 }
 
+/**
+ * Normalize OpenAI-compatible streaming `delta.content` into plain text.
+ *
+ * Most providers stream `delta.content` as a string, but some (notably Mistral
+ * Medium 3.5 / `mistral-medium-2604`) return an array of typed content parts
+ * — e.g. `[{ type: "text", text: "Hello" }]`. Without normalization those
+ * parts get string-coerced via `text += array`, producing the literal
+ * `[object Object]` sequences observed in issue #911.
+ *
+ * Returns the joined text. Non-text parts and unknown shapes are skipped so
+ * we never emit JS object sigils as visible output.
+ */
+function normalizeStreamingContentText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (Array.isArray(content)) {
+		let out = "";
+		for (const part of content) {
+			if (typeof part === "string") {
+				out += part;
+			} else if (part && typeof part === "object") {
+				const obj = part as { type?: unknown; text?: unknown };
+				if ((obj.type === undefined || obj.type === "text") && typeof obj.text === "string") {
+					out += obj.text;
+				}
+			}
+		}
+		return out;
+	}
+	if (content && typeof content === "object") {
+		const obj = content as { type?: unknown; text?: unknown };
+		if ((obj.type === undefined || obj.type === "text") && typeof obj.text === "string") {
+			return obj.text;
+		}
+	}
+	return "";
+}
+
 function serializeToolArguments(value: unknown): string {
 	if (value && typeof value === "object" && !Array.isArray(value)) {
 		try {
@@ -125,13 +164,21 @@ function hasToolHistory(messages: Message[]): boolean {
 export interface OpenAICompletionsOptions extends StreamOptions {
 	toolChoice?: ToolChoice;
 	reasoning?: "minimal" | "low" | "medium" | "high" | "xhigh";
+	/** Force-disable reasoning for OpenRouter-format requests (sends `reasoning: { enabled: false }`). */
+	disableReasoning?: boolean;
 	serviceTier?: ServiceTier;
 }
 
-type OpenAICompletionsSamplingParams = OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming & {
+type OpenAICompletionsParams = OpenAI.Chat.Completions.ChatCompletionCreateParamsStreaming & {
 	top_k?: number;
 	min_p?: number;
 	repetition_penalty?: number;
+	thinking?: { type: "enabled" | "disabled" };
+	enable_thinking?: boolean;
+	chat_template_kwargs?: { enable_thinking: boolean };
+	reasoning?: { effort?: string } | { enabled: false };
+	provider?: OpenAICompat["openRouterRouting"];
+	providerOptions?: { gateway?: { only?: string[]; order?: string[] } };
 };
 
 type AppliedToolStrictMode = "mixed" | "all_strict" | "none";
@@ -527,6 +574,7 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 				idleTimeoutMs,
 				errorMessage: "OpenAI completions stream stalled while waiting for the next event",
 				onIdle: () => requestAbortController.abort(),
+				abortSignal: options?.signal,
 			})) {
 				if (!chunk || typeof chunk !== "object") continue;
 
@@ -557,20 +605,17 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 				}
 
 				if (choice.delta) {
-					if (
-						choice.delta.content !== null &&
-						choice.delta.content !== undefined &&
-						choice.delta.content.length > 0
-					) {
+					const normalizedDeltaText = normalizeStreamingContentText(choice.delta.content);
+					if (normalizedDeltaText.length > 0) {
 						if (!firstTokenTime) firstTokenTime = Date.now();
 						if (parseMiniMaxThinkTags) {
-							taggedTextBuffer += choice.delta.content;
+							taggedTextBuffer += normalizedDeltaText;
 							flushTaggedTextBuffer();
 						} else if (stripDeepseekChatTemplateTokens) {
-							deepseekStripBuffer += choice.delta.content;
+							deepseekStripBuffer += normalizedDeltaText;
 							flushDeepseekStripBuffer(false);
 						} else {
-							appendTextDelta(choice.delta.content);
+							appendTextDelta(normalizedDeltaText);
 						}
 					}
 
@@ -824,7 +869,7 @@ function buildParams(
 	options: OpenAICompletionsOptions | undefined,
 	resolvedBaseUrl?: string,
 	toolStrictModeOverride?: ToolStrictModeOverride,
-): { params: OpenAICompletionsSamplingParams; toolStrictMode: AppliedToolStrictMode } {
+): { params: OpenAICompletionsParams; toolStrictMode: AppliedToolStrictMode } {
 	const compat = getCompat(model, resolvedBaseUrl);
 	const messages = convertMessages(model, context, compat);
 	maybeAddOpenRouterAnthropicCacheControl(model, messages);
@@ -837,7 +882,7 @@ function buildParams(
 	const effectiveMaxTokens = options?.maxTokens ?? (isKimi ? model.maxTokens : undefined);
 
 	const requestModelId = model.provider === "fireworks" ? toFireworksWireModelId(model.id) : model.id;
-	const params: OpenAICompletionsSamplingParams = {
+	const params: OpenAICompletionsParams = {
 		model: requestModelId,
 		messages,
 		stream: true,
@@ -845,7 +890,7 @@ function buildParams(
 	let toolStrictMode: AppliedToolStrictMode = "none";
 
 	if (compat.supportsUsageInStreaming !== false) {
-		(params as { stream_options?: { include_usage: boolean } }).stream_options = { include_usage: true };
+		params.stream_options = { include_usage: true };
 	}
 
 	if (compat.supportsStore) {
@@ -854,7 +899,7 @@ function buildParams(
 
 	if (effectiveMaxTokens) {
 		if (compat.maxTokensField === "max_tokens") {
-			(params as any).max_tokens = effectiveMaxTokens;
+			params.max_tokens = effectiveMaxTokens;
 		} else {
 			params.max_completion_tokens = effectiveMaxTokens;
 		}
@@ -897,27 +942,40 @@ function buildParams(
 
 	if (supportsReasoningParams && compat.thinkingFormat === "zai" && model.reasoning) {
 		// Z.ai uses binary thinking: { type: "enabled" | "disabled" }
-		// Must explicitly disable since z.ai defaults to thinking enabled
-		Reflect.set(params, "thinking", { type: options?.reasoning ? "enabled" : "disabled" });
+		// Must explicitly disable since z.ai defaults to thinking enabled.
+		const enabled = options?.reasoning && !options?.disableReasoning;
+		params.thinking = { type: enabled ? "enabled" : "disabled" };
 	} else if (supportsReasoningParams && compat.thinkingFormat === "qwen" && model.reasoning) {
 		// Qwen uses top-level enable_thinking: boolean
-		Reflect.set(params, "enable_thinking", !!options?.reasoning);
+		params.enable_thinking = !!options?.reasoning && !options?.disableReasoning;
 	} else if (supportsReasoningParams && compat.thinkingFormat === "qwen-chat-template" && model.reasoning) {
-		Reflect.set(params, "chat_template_kwargs", { enable_thinking: !!options?.reasoning });
+		params.chat_template_kwargs = {
+			enable_thinking: !!options?.reasoning && !options?.disableReasoning,
+		};
+	} else if (supportsReasoningParams && compat.thinkingFormat === "openrouter" && model.reasoning) {
+		// OpenRouter normalizes reasoning across providers via a nested reasoning object.
+		// Without an explicit signal, OpenRouter defaults reasoning models to thinking, which
+		// silently consumes the entire output budget on small `max_tokens` requests (e.g.
+		// title generation). Honor `disableReasoning` to opt out cleanly.
+		const openRouterParams = params as typeof params & {
+			reasoning?: { effort?: string } | { enabled: false };
+		};
+		if (options?.disableReasoning) {
+			openRouterParams.reasoning = { enabled: false };
+		} else if (options?.reasoning) {
+			openRouterParams.reasoning = {
+				effort: mapReasoningEffort(options.reasoning, compat.reasoningEffortMap),
+			};
+		}
 	} else if (
 		supportsReasoningParams &&
-		compat.thinkingFormat === "openrouter" &&
 		options?.reasoning &&
-		model.reasoning
+		!options?.disableReasoning &&
+		model.reasoning &&
+		compat.supportsReasoningEffort
 	) {
-		// OpenRouter normalizes reasoning across providers via a nested reasoning object.
-		const openRouterParams = params as typeof params & { reasoning?: { effort?: string } };
-		openRouterParams.reasoning = {
-			effort: mapReasoningEffort(options.reasoning, compat.reasoningEffortMap),
-		};
-	} else if (supportsReasoningParams && options?.reasoning && model.reasoning && compat.supportsReasoningEffort) {
 		// OpenAI-style reasoning_effort
-		Reflect.set(params, "reasoning_effort", mapReasoningEffort(options.reasoning, compat.reasoningEffortMap));
+		params.reasoning_effort = mapReasoningEffort(options.reasoning, compat.reasoningEffortMap) as Effort;
 	}
 
 	if (compat.disableReasoningOnForcedToolChoice && isForcedToolChoice(params.tool_choice)) {
@@ -925,13 +983,13 @@ function buildParams(
 		// Kimi 400 with `tool_choice 'specified' is incompatible with thinking
 		// enabled`. Drop reasoning for this turn instead of dropping tool_choice;
 		// the agent still gets the forced tool call, just without thinking.
-		delete (params as { reasoning_effort?: unknown }).reasoning_effort;
-		delete (params as { reasoning?: unknown }).reasoning;
+		delete params.reasoning_effort;
+		delete params.reasoning;
 	}
 
 	// OpenRouter provider routing preferences
 	if (model.baseUrl.includes("openrouter.ai") && compat.openRouterRouting) {
-		Reflect.set(params, "provider", compat.openRouterRouting);
+		params.provider = compat.openRouterRouting;
 	}
 
 	// Vercel AI Gateway provider routing preferences
@@ -941,7 +999,7 @@ function buildParams(
 			const gatewayOptions: Record<string, string[]> = {};
 			if (routing.only) gatewayOptions.only = routing.only;
 			if (routing.order) gatewayOptions.order = routing.order;
-			Reflect.set(params, "providerOptions", { gateway: gatewayOptions });
+			params.providerOptions = { gateway: gatewayOptions };
 		}
 	}
 
@@ -949,13 +1007,6 @@ function buildParams(
 		Object.assign(params, compat.extraBody);
 	}
 
-	return buildParamsResult(params, toolStrictMode);
-}
-
-function buildParamsResult(
-	params: OpenAICompletionsSamplingParams,
-	toolStrictMode: AppliedToolStrictMode,
-): { params: OpenAICompletionsSamplingParams; toolStrictMode: AppliedToolStrictMode } {
 	return { params, toolStrictMode };
 }
 
@@ -1203,9 +1254,12 @@ export function convertMessages(
 						assistantMsg.content = [{ type: "text", text: thinkingText }];
 					}
 				} else {
-					// Use the signature from the first thinking block if available (for llama.cpp server + gpt-oss)
+					// Use the signature from the first thinking block if available, but only for
+					// recognized OpenAI-compat reasoning field names. Opaque signatures from other
+					// providers (Anthropic encrypted, OpenAI Responses JSON) are not valid property names.
 					const signature = nonEmptyThinkingBlocks[0].thinkingSignature;
-					if (signature && signature.length > 0) {
+					const recognizedFields = ["reasoning_content", "reasoning", "reasoning_text"];
+					if (signature && recognizedFields.includes(signature)) {
 						(assistantMsg as any)[signature] = nonEmptyThinkingBlocks.map(b => b.thinking).join("\n");
 					}
 				}
@@ -1234,25 +1288,71 @@ export function convertMessages(
 			}
 
 			const toolCalls = msg.content.filter(b => b.type === "toolCall") as ToolCall[];
-			// Inject a `reasoning_content` placeholder on assistant tool-call turns when the backend
-			// rejects history without it. The compat flag captures the rule:
-			//   - Kimi (native or via OpenCode-Go): chat completion endpoint demands the field.
-			//   - Reasoning models reached through OpenRouter (e.g. DeepSeek V4 Pro): the underlying
-			//     provider's thinking-mode validator demands it on every prior assistant turn. omp
-			//     cannot synthesize real reasoning when the conversation was warmed up by another
-			//     provider whose reasoning is redacted/encrypted (Anthropic) or simply absent, so we
-			//     emit a placeholder. Real captured reasoning, when present, is preserved earlier via
-			//     the `thinkingSignature` echo path and short-circuits via `hasReasoningField`.
-			// `thinkingFormat` is gated to formats that consume the field (openai/openrouter chat
-			// completions); formats with their own conventions (zai, qwen) are excluded.
-			const stubsReasoningContent =
+			// Replay reasoning_content on assistant turns for backends that validate
+			// thinking-mode history. DeepSeek V4 requires reasoning_content on EVERY
+			// assistant turn once any prior turn included it — not just tool-call turns.
+			// The replay logic has three tiers:
+			//   1. Recover from thinking blocks with valid signatures (covers same-model replay
+			//      where nonEmptyThinkingBlocks may have filtered out empty-text blocks)
+			//   2. For providers that require the field but returned no reasoning at all
+			//      (e.g. proxy-stripped reasoning_content), emit an empty string
+			//   3. For providers that accept synthetic placeholders (Kimi, OpenRouter), emit "."
+			// DeepSeek V4 rejects synthetic "." placeholders — it validates the exact value —
+			// so the allowsSyntheticReasoningContentForToolCalls flag controls tier 3.
+			const canUseSyntheticReasoningContent =
 				compat.requiresReasoningContentForToolCalls &&
+				compat.allowsSyntheticReasoningContentForToolCalls &&
 				(compat.thinkingFormat === "openai" || compat.thinkingFormat === "openrouter");
+			// DeepSeek reasoning models require reasoning_content on ALL assistant turns,
+			// not just tool-call turns. Other providers (Kimi, OpenRouter) only require it
+			// on tool-call turns.
+			const needsReasoningOnAllTurns =
+				compat.requiresReasoningContentForToolCalls && !compat.allowsSyntheticReasoningContentForToolCalls;
+			const needsReasoningField = needsReasoningOnAllTurns || toolCalls.length > 0;
 			let hasReasoningField =
 				(assistantMsg as any).reasoning_content !== undefined ||
 				(assistantMsg as any).reasoning !== undefined ||
 				(assistantMsg as any).reasoning_text !== undefined;
-			if (toolCalls.length > 0 && stubsReasoningContent && !hasReasoningField) {
+			// Tier 1: Recover reasoning_content from ALL thinking blocks (including empty-text
+			// ones) when the provider requires exact replay and rejects synthetic placeholders.
+			// This covers the case where thinking blocks have valid signatures but were excluded
+			// by the nonEmptyThinkingBlocks filter above, or where thinking text is empty but
+			// the signature identifies the correct field name for replay.
+			// Only recognized OpenAI-compat reasoning field names qualify — opaque signatures
+			// from other providers (Anthropic encrypted, OpenAI Responses JSON, etc.) are not
+			// valid property names for the wire message.
+			if (
+				needsReasoningField &&
+				!hasReasoningField &&
+				compat.requiresReasoningContentForToolCalls &&
+				!compat.allowsSyntheticReasoningContentForToolCalls
+			) {
+				const allThinkingBlocks = msg.content.filter(b => b.type === "thinking") as ThinkingContent[];
+				if (allThinkingBlocks.length > 0) {
+					const signature = allThinkingBlocks[0].thinkingSignature;
+					const recognizedFields = ["reasoning_content", "reasoning", "reasoning_text"];
+					if (signature && recognizedFields.includes(signature)) {
+						(assistantMsg as any)[signature] = allThinkingBlocks.map(b => b.thinking).join("\n");
+						hasReasoningField = true;
+					}
+				}
+			}
+			// Tier 2: When the provider requires reasoning_content but there are genuinely no
+			// thinking blocks at all (e.g. proxy stripped reasoning_content from the response),
+			// emit an empty string. The field must be present; an empty string is the most honest
+			// representation of "no reasoning was captured."
+			if (
+				needsReasoningField &&
+				!hasReasoningField &&
+				compat.requiresReasoningContentForToolCalls &&
+				!compat.allowsSyntheticReasoningContentForToolCalls
+			) {
+				const reasoningField = compat.reasoningContentField ?? "reasoning_content";
+				(assistantMsg as any)[reasoningField] = "";
+				hasReasoningField = true;
+			}
+			// Tier 3: For providers that accept synthetic placeholders (Kimi, OpenRouter).
+			if (toolCalls.length > 0 && canUseSyntheticReasoningContent && !hasReasoningField) {
 				const reasoningField = compat.reasoningContentField ?? "reasoning_content";
 				(assistantMsg as any)[reasoningField] = ".";
 				hasReasoningField = true;

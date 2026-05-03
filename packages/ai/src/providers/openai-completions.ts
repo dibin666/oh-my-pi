@@ -349,7 +349,7 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions"> = (
 
 		try {
 			const apiKey = options?.apiKey || getEnvApiKey(model.provider) || "";
-			const idleTimeoutMs = getOpenAIStreamIdleTimeoutMs(options?.streamIdleTimeoutMs);
+			const idleTimeoutMs = getOpenAIStreamIdleTimeoutMs();
 			const {
 				client,
 				copilotPremiumRequests,

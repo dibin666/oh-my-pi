@@ -186,7 +186,7 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses"> = (
 			);
 			const providerSessionState = getOpenAIResponsesProviderSessionState(model, options?.providerSessionState);
 			const { params } = buildParams(model, context, options, providerSessionState, baseUrl);
-			const idleTimeoutMs = getOpenAIStreamIdleTimeoutMs(options?.streamIdleTimeoutMs);
+			const idleTimeoutMs = getOpenAIStreamIdleTimeoutMs();
 			options?.onPayload?.(params);
 			rawRequestDump = {
 				provider: model.provider,

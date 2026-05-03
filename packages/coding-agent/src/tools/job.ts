@@ -44,8 +44,6 @@ const WAIT_DURATION_MS: Record<string, number> = {
 	"30s": 30_000,
 	"1m": 60_000,
 	"5m": 5 * 60_000,
-	"10m": 10 * 60_000,
-	"30m": 30 * 60_000,
 };
 
 function parseWaitDurationMs(value: string | undefined): number {

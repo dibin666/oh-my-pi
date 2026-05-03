@@ -323,22 +323,16 @@ describe("Agent", () => {
 		]);
 	});
 
-	it("forwards sessionId, thinkingBudgets, and stream timeouts to streamFn options", async () => {
+	it("forwards sessionId and thinkingBudgets to streamFn options", async () => {
 		let receivedSessionId: string | undefined;
 		let receivedBudgets: ThinkingBudgets | undefined;
-		let receivedStreamIdleTimeoutMs: number | undefined;
-		let receivedStreamFirstEventTimeoutMs: number | undefined;
 
 		const agent = new Agent({
 			sessionId: "session-abc",
 			thinkingBudgets: { minimal: 64, low: 256 },
-			streamIdleTimeoutMs: 120_000,
-			streamFirstEventTimeoutMs: 180_000,
 			streamFn: (_model, _context, options) => {
 				receivedSessionId = options?.sessionId;
 				receivedBudgets = options?.thinkingBudgets;
-				receivedStreamIdleTimeoutMs = options?.streamIdleTimeoutMs;
-				receivedStreamFirstEventTimeoutMs = options?.streamFirstEventTimeoutMs;
 				const stream = new MockAssistantStream();
 				queueMicrotask(() => {
 					const message = createAssistantMessage([{ type: "text", text: "ok" }]);
@@ -351,19 +345,13 @@ describe("Agent", () => {
 		await agent.prompt("hello");
 		expect(receivedSessionId).toBe("session-abc");
 		expect(receivedBudgets).toEqual({ minimal: 64, low: 256 });
-		expect(receivedStreamIdleTimeoutMs).toBe(120_000);
-		expect(receivedStreamFirstEventTimeoutMs).toBe(180_000);
 
 		agent.sessionId = "session-def";
 		agent.thinkingBudgets = { medium: 512 };
-		agent.streamIdleTimeoutMs = undefined;
-		agent.streamFirstEventTimeoutMs = 0;
 
 		await agent.prompt("hello again");
 		expect(receivedSessionId).toBe("session-def");
 		expect(receivedBudgets).toEqual({ medium: 512 });
-		expect(receivedStreamIdleTimeoutMs).toBeUndefined();
-		expect(receivedStreamFirstEventTimeoutMs).toBe(0);
 	});
 
 	it("forwards onPayload to streamFn options", async () => {

@@ -46,6 +46,7 @@ import {
 	formatHashLine,
 	HASHLINE_ANCHOR_RE_SRC,
 	HASHLINE_CONTENT_SEPARATOR,
+	HASHLINE_CONTENT_SEPARATOR_RE_SRC,
 	HASHLINE_LID_CAPTURE_RE_SRC,
 } from "../line-hash";
 import { detectLineEnding, normalizeToLF, restoreLineEndings, stripBom } from "../normalize";
@@ -131,7 +132,7 @@ const RANGE_INTERIOR_HASH = "**";
 /** Header marker introducing a new file section in multi-section input. */
 const FILE_HEADER_PREFIX = "@";
 
-const HASHLINE_CONTENT_SEPARATOR_RE = "[:|]";
+const HASHLINE_CONTENT_SEPARATOR_RE = `[:${HASHLINE_CONTENT_SEPARATOR_RE_SRC}]`;
 const HASHLINE_PREFIX_RE = new RegExp(`^\\s*(?:>>>|>>)?\\s*(?:[+*]\\s*)?\\d+[a-z]{2}${HASHLINE_CONTENT_SEPARATOR_RE}`);
 const HASHLINE_PREFIX_PLUS_RE = new RegExp(`^\\s*(?:>>>|>>)?\\s*\\+\\s*\\d+[a-z]{2}${HASHLINE_CONTENT_SEPARATOR_RE}`);
 const DIFF_PLUS_RE = /^[+](?![+])/;
@@ -603,9 +604,9 @@ export function buildCompactHashlineDiffPreview(
 // 10. Edit DSL parsing
 //
 // Grammar (one op per "block"):
-//   "+ ANCHOR"   followed by 1+ "|TEXT" payload lines           — insert
+//   "+ ANCHOR"   followed by 1+ "<sep>TEXT" payload lines        — insert
 //   "- A..B"     no payload                                     — delete range
-//   "= A..B"     followed by 1+ "|TEXT" payload lines           — replace
+//   "= A..B"     followed by 1+ "<sep>TEXT" payload lines        — replace
 //
 // ANCHOR is `LINE<hash>`, e.g. `160ab`. BOF / EOF are also valid insert targets.
 // ───────────────────────────────────────────────────────────────────────────
@@ -631,7 +632,7 @@ function collectPayload(
 	let index = startIndex;
 	while (index < lines.length) {
 		const line = stripTrailingCarriageReturn(lines[index]);
-		if (!line.startsWith("|")) break;
+		if (!line.startsWith(HASHLINE_CONTENT_SEPARATOR)) break;
 		payload.push(line.slice(1));
 		index++;
 	}
@@ -647,6 +648,7 @@ export function parseHashline(diff: string): HashlineEdit[] {
 
 export function parseHashlineWithWarnings(diff: string): { edits: HashlineEdit[]; warnings: string[] } {
 	const edits: HashlineEdit[] = [];
+	const warnings: string[] = [];
 	const lines = diff.split("\n");
 	let editIndex = 0;
 
@@ -662,7 +664,7 @@ export function parseHashlineWithWarnings(diff: string): { edits: HashlineEdit[]
 			i++;
 			continue;
 		}
-		if (line.startsWith("|")) {
+		if (line.startsWith(HASHLINE_CONTENT_SEPARATOR)) {
 			throw new Error(`line ${lineNum}: payload line has no preceding +, <, or = operation.`);
 		}
 
@@ -716,12 +718,12 @@ export function parseHashlineWithWarnings(diff: string): { edits: HashlineEdit[]
 		}
 
 		throw new Error(
-			`line ${lineNum}: unrecognized op. Use < ANCHOR (insert before), + ANCHOR (insert after), - A..B (delete), = A..B (replace), or |TEXT payload lines. ` +
+			`line ${lineNum}: unrecognized op. Use < ANCHOR (insert before), + ANCHOR (insert after), - A..B (delete), = A..B (replace), or "${HASHLINE_CONTENT_SEPARATOR}TEXT" payload lines. ` +
 				`Got ${JSON.stringify(line)}.`,
 		);
 	}
 
-	return { edits, warnings: [] };
+	return { edits, warnings };
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -1000,7 +1002,7 @@ function stripLeadingBlankLines(input: string): string {
 function containsRecognizableHashlineOperations(input: string): boolean {
 	for (const rawLine of input.split("\n")) {
 		const line = stripTrailingCarriageReturn(rawLine);
-		if (/^[+<=-]\s+/.test(line) || line.startsWith("|")) return true;
+		if (/^[+<=-]\s+/.test(line) || line.startsWith(HASHLINE_CONTENT_SEPARATOR)) return true;
 	}
 	return false;
 }
